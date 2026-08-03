@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::Emitter;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -60,8 +61,7 @@ where
     }
 }
 
-#[tauri::command]
-async fn analyze_video(video_path: String) -> Result<VideoInfo, String> {
+async fn probe_video(video_path: &str) -> Result<VideoInfo, String> {
     let mut cmd = Command::new("ffprobe");
     cmd.args([
         "-v", "error",
@@ -70,7 +70,7 @@ async fn analyze_video(video_path: String) -> Result<VideoInfo, String> {
         "-show_entries", "format=duration",
         "-of", "json",
     ])
-    .arg(&video_path);
+    .arg(video_path);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -107,7 +107,7 @@ async fn analyze_video(video_path: String) -> Result<VideoInfo, String> {
     let mut audio_cmd = Command::new("ffprobe");
     audio_cmd
         .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0"])
-        .arg(&video_path);
+        .arg(video_path);
 
     #[cfg(target_os = "windows")]
     audio_cmd.creation_flags(CREATE_NO_WINDOW);
@@ -118,6 +118,57 @@ async fn analyze_video(video_path: String) -> Result<VideoInfo, String> {
         .unwrap_or(false);
 
     Ok(VideoInfo { width, height, fps, duration, has_audio })
+}
+
+#[tauri::command]
+async fn analyze_video(video_path: String) -> Result<VideoInfo, String> {
+    probe_video(&video_path).await
+}
+
+fn format_factor(factor: f64) -> String {
+    if (factor - factor.round()).abs() < f64::EPSILON {
+        format!("{:.0}", factor)
+    } else {
+        factor.to_string()
+    }
+}
+
+fn rife_output_path(video_path: &str, mode: &str, factor: f64, input_fps: f64) -> Result<PathBuf, String> {
+    if !factor.is_finite() || factor <= 0.0 {
+        return Err("Interpolation factor must be greater than zero".to_string());
+    }
+
+    let input = Path::new(video_path);
+    let parent = input.parent().unwrap_or_else(|| Path::new(""));
+    let stem = input
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or("Unable to derive the RIFE output filename")?;
+    let output_fps = match mode {
+        "boost" => (input_fps * factor).round(),
+        "slowmo" => input_fps.round(),
+        _ => return Err(format!("Unsupported interpolation mode: {mode}")),
+    };
+
+    if output_fps <= 0.0 {
+        return Err("Unable to derive a valid output framerate".to_string());
+    }
+
+    Ok(parent.join(format!(
+        "{stem}-{}x-RIFE-4.26-{}fps.mp4",
+        format_factor(factor),
+        output_fps as u64
+    )))
+}
+
+fn ensure_nonempty_file(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("{label} output is missing: {} ({error})", path.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!("{label} output is invalid: {}", path.display()));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -133,6 +184,12 @@ async fn run_time_remap(
 ) -> Result<String, String> {
     let python_exe = r"C:\Users\cia\time-remap-app\venv\Scripts\python.exe";
     let script_path = r"C:\Users\cia\time-remap-app\time_remap.py";
+    let info = probe_video(&video_path).await?;
+    let out_path = rife_output_path(&video_path, &mode, factor, info.fps)?;
+
+    if !Path::new(python_exe).is_file() || !Path::new(script_path).is_file() {
+        return Err("The local RIFE runtime is unavailable".to_string());
+    }
 
     let mut cmd = Command::new(python_exe);
     cmd.arg(script_path)
@@ -165,9 +222,10 @@ async fn run_time_remap(
     let _ = t_err.await;
 
     if status.success() {
-        Ok(video_path)
+        ensure_nonempty_file(&out_path, "RIFE")?;
+        Ok(out_path.to_string_lossy().to_string())
     } else {
-        Err("time_remap.py process failed".to_string())
+        Err(format!("time_remap.py process failed ({status})"))
     }
 }
 
@@ -175,6 +233,10 @@ async fn run_time_remap(
 async fn run_smoothie(app: tauri::AppHandle, video_path: String, overrides: Vec<String>) -> Result<String, String> {
     let smoothie_dir = r"C:\Users\cia\Music\smoothie1";
     let smoothie_exe = r"C:\Users\cia\Music\smoothie1\bin\smoothie-rs.exe";
+
+    if !Path::new(smoothie_exe).is_file() {
+        return Err("The local smoothie-rs runtime is unavailable".to_string());
+    }
 
     let out_path = {
         let p = std::path::Path::new(&video_path);
@@ -219,9 +281,10 @@ async fn run_smoothie(app: tauri::AppHandle, video_path: String, overrides: Vec<
     let _ = t_err.await;
 
     if status.success() {
+        ensure_nonempty_file(&out_path, "Smoothie")?;
         Ok(out_path_str)
     } else {
-        Err("smoothie-rs process failed".to_string())
+        Err(format!("smoothie-rs process failed ({status})"))
     }
 }
 

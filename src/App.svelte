@@ -27,6 +27,9 @@
   let isComplete = $state(false);
   let videoInfo = $state(null);
   let lastOutputPath = $state('');
+  let rifeOutputPath = $state('');
+  let jobPhase = $state('idle');
+  let jobError = $state('');
 
   const DEFAULT_RIFE = {
     mode: 'boost',
@@ -38,6 +41,23 @@
   };
 
   let rifeSettings = $state(loadRifeSettings());
+  let autoRender = $state(loadAutoRender());
+
+  function loadAutoRender() {
+    try {
+      return localStorage.getItem('rife_auto_render') === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  function saveAutoRender() {
+    try {
+      localStorage.setItem('rife_auto_render', String(autoRender));
+    } catch {
+      showToast('Failed to save auto-render preference', 'error');
+    }
+  }
 
   function loadRifeSettings() {
     try {
@@ -111,6 +131,7 @@
   }
 
   let anyProcessing = $derived(isProcessing || isSmoothieProcessing);
+  let canRenderSmoothie = $derived(Boolean(rifeOutputPath) && lastOutputPath === rifeOutputPath && !anyProcessing);
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
   let smoothieSliderPct = $derived(((smoothieSettings.fps - 20) / (60 - 20)) * 100);
 
@@ -150,15 +171,23 @@
     }
   }
 
-  function resetRunState() {
-    logs = [];
+  function resetTelemetry() {
     progress = 0;
     elapsedTime = '00:00';
     remainingTime = '--:--';
   }
 
-  function parseLogLine(line) {
+  function resetRunState() {
+    logs = [];
+    resetTelemetry();
+  }
+
+  function appendLog(line) {
     logs = [...logs, line].slice(-500);
+  }
+
+  function parseLogLine(line) {
+    appendLog(line);
     if (line.includes('Finalizing output') || line.includes('FFmpeg') || /^frame=/.test(line)) {
       remainingTime = 'Encoding export...';
       if (progress < 99) progress = 99;
@@ -209,6 +238,9 @@
     isLoading = true;
     isComplete = false;
     lastOutputPath = '';
+    rifeOutputPath = '';
+    jobPhase = 'idle';
+    jobError = '';
     resetRunState();
     try {
       videoInfo = await invoke('analyze_video', { videoPath: path });
@@ -232,9 +264,13 @@
     isProcessing = true;
     isComplete = false;
     lastOutputPath = '';
+    rifeOutputPath = '';
+    jobError = '';
+    jobPhase = 'rife';
     resetRunState();
+    appendLog('[CIA RENDER] RIFE 4.26 started');
     try {
-      await invoke('run_time_remap', {
+      const outputPath = await invoke('run_time_remap', {
         videoPath,
         mode: rifeSettings.mode,
         factor: Number(rifeSettings.factor),
@@ -243,20 +279,67 @@
         sceneThreshold: Number(rifeSettings.sceneThreshold),
         blendCuts: Number(rifeSettings.blendCuts)
       });
+      rifeOutputPath = outputPath;
+      lastOutputPath = outputPath;
+      appendLog(`[CIA RENDER] RIFE output verified: ${outputPath}`);
+
+      if (autoRender) {
+        jobPhase = 'smoothie';
+        const smoothiePath = await runSmoothieFor(outputPath, { preserveLogs: true });
+        lastOutputPath = smoothiePath;
+        appendLog(`[CIA RENDER] Smoothie output verified: ${smoothiePath}`);
+      }
+
       progress = 100;
+      jobPhase = 'complete';
       isComplete = true;
-      const lastSlash = Math.max(videoPath.lastIndexOf('/'), videoPath.lastIndexOf('\\'));
-      const dir = lastSlash !== -1 ? videoPath.substring(0, lastSlash) : '';
-      const filename = lastSlash !== -1 ? videoPath.substring(lastSlash + 1) : videoPath;
-      const dot = filename.lastIndexOf('.');
-      const baseName = dot !== -1 ? filename.substring(0, dot) : filename;
-      const targetFps = rifeSettings.mode === 'boost' ? Math.round(videoInfo.fps * rifeSettings.factor) : Math.round(videoInfo.fps);
-      const outFilename = `${baseName}-${rifeSettings.factor}x-RIFE-4.26-${targetFps}fps.mp4`;
-      lastOutputPath = dir ? `${dir}\\${outFilename}` : outFilename;
       playCompletionChime();
-      showToast('Time-remap complete!', 'success');
+      showToast(autoRender ? 'Interpolation and Smoothie render complete!' : 'Interpolation complete!', 'success');
     } catch (e) {
+      jobError = String(e);
+      if (rifeOutputPath) {
+        lastOutputPath = rifeOutputPath;
+        isComplete = true;
+      }
+      jobPhase = 'failed';
       showToast(`Process failed: ${e}`, 'error');
+    } finally {
+      isProcessing = false;
+    }
+  }
+
+  function resetInterpolation() {
+    videoPath = '';
+    videoInfo = null;
+    isComplete = false;
+    rifeOutputPath = '';
+    lastOutputPath = '';
+    jobPhase = 'idle';
+    jobError = '';
+    resetRunState();
+  }
+
+  async function renderRifeWithSmoothie() {
+    if (!rifeOutputPath || anyProcessing) return;
+    isProcessing = true;
+    isComplete = false;
+    jobError = '';
+    jobPhase = 'smoothie';
+    try {
+      const smoothiePath = await runSmoothieFor(rifeOutputPath, { preserveLogs: true });
+      lastOutputPath = smoothiePath;
+      appendLog(`[CIA RENDER] Smoothie output verified: ${smoothiePath}`);
+      progress = 100;
+      jobPhase = 'complete';
+      isComplete = true;
+      playCompletionChime();
+      showToast('Smoothie render complete!', 'success');
+    } catch (e) {
+      jobError = String(e);
+      lastOutputPath = rifeOutputPath;
+      jobPhase = 'failed';
+      isComplete = true;
+      showToast(`Smoothie failed: ${e}`, 'error');
     } finally {
       isProcessing = false;
     }
@@ -298,14 +381,8 @@
     if (path) await loadSmoothie(path);
   }
 
-  async function startSmoothie() {
-    if (!smoothiePath || anyProcessing) return;
-    isSmoothieProcessing = true;
-    isSmoothieComplete = false;
-    smoothieOutputPath = '';
-    resetRunState();
-
-    const overrides = [
+  function smoothieOverrides() {
+    return [
       `frame blending;fps;${smoothieSettings.fps}`,
       `color grading;brightness;${smoothieSettings.brightness}`,
       `color grading;saturation;${smoothieSettings.saturation}`,
@@ -314,9 +391,23 @@
       `lut;opacity;${smoothieSettings.lutOpacity}`,
       `console;borderless;${smoothieSettings.borderless}`
     ];
+  }
+
+  async function runSmoothieFor(inputPath, { preserveLogs = false } = {}) {
+    if (!preserveLogs) resetRunState();
+    else resetTelemetry();
+    appendLog('[CIA RENDER] SMOOTHIE started');
+    return invoke('run_smoothie', { videoPath: inputPath, overrides: smoothieOverrides() });
+  }
+
+  async function startSmoothie() {
+    if (!smoothiePath || anyProcessing) return;
+    isSmoothieProcessing = true;
+    isSmoothieComplete = false;
+    smoothieOutputPath = '';
 
     try {
-      const outPath = await invoke('run_smoothie', { videoPath: smoothiePath, overrides });
+      const outPath = await runSmoothieFor(smoothiePath);
       progress = 100;
       isSmoothieComplete = true;
       smoothieOutputPath = outPath;
@@ -377,7 +468,7 @@
                 <span class="pro-dot active"></span>
                 <h3 class="pro-filename">{videoPath.split(/[\\/]/).pop()}</h3>
               </div>
-              <span class="pro-engine-badge">RIFE 4.26 ENGINE</span>
+              <span class="pro-engine-badge">{jobPhase === 'smoothie' ? 'SMOOTHIE-RS ENGINE' : 'RIFE 4.26 ENGINE'}</span>
             </header>
 
             <div class="pro-pipeline-box">
@@ -400,7 +491,9 @@
               <div class="telemetry-cell">
                 <span class="telemetry-label">STATUS</span>
                 <span class="telemetry-val highlight">
-                  {progress >= 99 || remainingTime === 'Encoding export...' ? 'ENCODING EXPORT' : 'PROCESSING'}
+                  {jobPhase === 'smoothie'
+                    ? (progress >= 99 || remainingTime === 'Encoding export...' ? 'SMOOTHIE ENCODING' : 'SMOOTHIE RENDERING')
+                    : (progress >= 99 || remainingTime === 'Encoding export...' ? 'RIFE ENCODING' : 'RIFE PROCESSING')}
                 </span>
               </div>
               <div class="telemetry-cell">
@@ -434,6 +527,9 @@
           </div>
         {:else if isComplete}
           <div class="pro-complete-card">
+            {#if jobError}
+              <span class="completion-error">{jobError}</span>
+            {/if}
             <div class="pro-output-box">
               <span class="box-label">EXPORTED FILE</span>
               <span class="box-path">{lastOutputPath.split(/[\\/]/).pop()}</span>
@@ -442,7 +538,10 @@
             <div class="complete-actions-row">
               <button class="btn-pro-secondary" onclick={openFile}>OPEN FILE</button>
               <button class="btn-pro-secondary" onclick={openFolder}>REVEAL IN EXPLORER</button>
-              <button class="btn-pro-secondary" onclick={() => { videoPath = ''; videoInfo = null; isComplete = false; }}>NEW RENDER</button>
+              {#if canRenderSmoothie}
+                <button class="btn-pro-secondary" onclick={renderRifeWithSmoothie}>{jobPhase === 'failed' ? 'RETRY SMOOTHIE' : 'RENDER (SMOOTHIE)'}</button>
+              {/if}
+              <button class="btn-pro-secondary" onclick={resetInterpolation}>NEW RENDER</button>
             </div>
           </div>
         {:else}
@@ -467,13 +566,18 @@
               <!-- Factor Slider 2x to 10x -->
               <GlowSlider bind:value={rifeSettings.factor} min={2} max={10} step={1} label="FACTOR:" unit="x" />
 
+              <label class="auto-render-toggle">
+                <input type="checkbox" bind:checked={autoRender} onchange={saveAutoRender} />
+                <span>AUTO-RENDER → SMOOTHIE</span>
+              </label>
+
               <div class="output-preview">
                 <span>Out: {outputFps.toFixed(0)} FPS</span>
                 <span>Dur: {outputDuration.toFixed(2)}s</span>
               </div>
 
               <button class="btn-primary" onclick={startProcessing} disabled={anyProcessing}>
-                {isProcessing ? 'PROCESSING...' : 'START TIME-REMAP'}
+                {isProcessing ? 'PROCESSING...' : 'START INTERPOLATION'}
               </button>
             </div>
           </div>
@@ -1338,6 +1442,42 @@
     font-family: 'IBM Plex Mono', monospace;
   }
 
+  .auto-render-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    color: #a1a1aa;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+  }
+
+  .auto-render-toggle input {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border: 1px solid #52525b;
+    border-radius: 3px;
+    background: #09090c;
+    display: grid;
+    place-content: center;
+  }
+
+  .auto-render-toggle input::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    transform: scale(0);
+    background: #ffffff;
+    transition: transform 0.12s ease;
+  }
+
+  .auto-render-toggle input:checked::before { transform: scale(1); }
+  .auto-render-toggle:hover { color: #ffffff; }
+
   .telemetry-val.highlight {
     color: #ffffff;
   }
@@ -1448,6 +1588,15 @@
     font-size: 12px;
     font-weight: 700;
     color: #e4e4e7;
+  }
+
+  .completion-error {
+    max-width: 460px;
+    color: #d4d4d8;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    line-height: 1.45;
+    text-align: center;
   }
 
   .complete-actions-row {
