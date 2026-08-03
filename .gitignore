@@ -1,0 +1,36 @@
+.DS_Store
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Generated application artifacts
+/dist/
+/src-tauri/target/
+*.log
+*.pdb
+
+# Local render and test media
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+
+# Local Python caches, environments, and model weights
+/venv/
+__pycache__/
+*.py[cod]
+*.pkl
+*.pth
+*.pt
+*.onnx
+
+# Legacy Dollrunner sidecars; not part of CIA RENDER
+/src-tauri/SaveEditor-x86_64-pc-windows-msvc.exe
+/src-tauri/binaries/
