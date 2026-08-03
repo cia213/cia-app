@@ -199,6 +199,13 @@
     logs = [...logs, line].slice(-500);
   }
 
+  function activateOnKeyboard(event, action) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      action();
+    }
+  }
+
   function parseLogLine(line) {
     appendLog(line);
     if (line.includes('Finalizing output') || line.includes('FFmpeg') || /^frame=/.test(line)) {
@@ -478,7 +485,7 @@
     <!-- DASHBOARD PAGE (RIFE) -->
     {#if activePage === 'dashboard'}
       {#if !videoPath}
-        <div class="drop-zone" class:dragging={isDragging} onclick={pickFile} role="button" tabindex="0">
+        <div class="drop-zone" class:dragging={isDragging} onclick={pickFile} onkeydown={(event) => activateOnKeyboard(event, pickFile)} role="button" tabindex="0">
           <p>DRAG VIDEO</p>
         </div>
       {:else if isLoading}
@@ -610,7 +617,7 @@
     <!-- SMOOTHIE PAGE -->
     {:else if activePage === 'smoothie'}
       {#if !smoothiePath}
-        <div class="drop-zone" class:dragging={isDragging} onclick={pickSmoothieFile} role="button" tabindex="0">
+        <div class="drop-zone" class:dragging={isDragging} onclick={pickSmoothieFile} onkeydown={(event) => activateOnKeyboard(event, pickSmoothieFile)} role="button" tabindex="0">
           <p>DRAG VIDEO</p>
         </div>
       {:else if isSmoothieLoading}
@@ -762,7 +769,7 @@
   <!-- RIFE SETTINGS MODAL DRAWER -->
   {#if showRifeSettings}
     <div class="modal-backdrop" onclick={() => showRifeSettings = false} role="presentation">
-      <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+      <div class="modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
         <div class="modal-header">
           <h2>RIFE SETTINGS</h2>
           <button class="btn-close-modal" onclick={() => showRifeSettings = false}>✕</button>
@@ -819,7 +826,7 @@
   <!-- SMOOTHIE SETTINGS MODAL DRAWER -->
   {#if showSmoothieSettings}
     <div class="modal-backdrop" onclick={() => showSmoothieSettings = false} role="presentation">
-      <div class="modal-card" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+      <div class="modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
         <div class="modal-header">
           <h2>SMOOTHIE CONFIGURATION</h2>
           <button class="btn-close-modal" onclick={() => showSmoothieSettings = false}>✕</button>

@@ -78,6 +78,7 @@
 
   <div
     class="slider-track-wrap"
+    role="presentation"
     onmouseenter={() => isHovered = true}
     onmouseleave={() => isHovered = false}
     onmousedown={() => isActive = true}
