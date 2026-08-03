@@ -6,7 +6,7 @@
 
   const appWindow = getCurrentWindow();
 
-  let activePage = $state('dashboard'); // 'dashboard' | 'smoothie'
+  let activePage = $state('dashboard'); // 'dashboard' | 'smoothie' | 'about'
   let isDragging = $state(false);
   let logs = $state([]);
   let progress = $state(0);
@@ -106,6 +106,18 @@
   };
 
   let smoothieSettings = $state(loadSmoothieSettings());
+
+  const ABOUT_LINKS = [
+    { name: 'Practical-RIFE', detail: 'RIFE interpolation runtime', url: 'https://github.com/hzwer/Practical-RIFE' },
+    { name: 'smoothie-rs', detail: 'Frame blending and render runtime', url: 'https://github.com/couleur-tweak-tips/smoothie-rs' },
+    { name: 'VapourSynth', detail: 'Video processing framework', url: 'https://github.com/vapoursynth/vapoursynth' },
+    { name: 'FFmpeg', detail: 'Media probing and encoding', url: 'https://github.com/FFmpeg/FFmpeg' },
+    { name: 'Tauri', detail: 'Native desktop application framework', url: 'https://github.com/tauri-apps/tauri' },
+    { name: 'Svelte', detail: 'User interface framework', url: 'https://github.com/sveltejs/svelte' },
+    { name: 'IBM Plex', detail: 'Interface typography', url: 'https://github.com/IBM/plex' },
+    { name: 'Flowframes', detail: 'Workflow inspiration and attribution', url: 'https://github.com/n00mkrad/flowframes' },
+    { name: 'Topaz Video AI', detail: 'Optional proprietary local enhancement runtime', url: 'https://www.topazlabs.com/topaz-video-ai' }
+  ];
 
   function loadSmoothieSettings() {
     try {
@@ -433,6 +445,14 @@
     try { await invoke('open_target_folder', { path: smoothieOutputPath }); }
     catch (e) { showToast(`Failed to open folder: ${e}`, 'error'); }
   }
+
+  async function openAboutLink(url) {
+    try {
+      await invoke('open_about_link', { url });
+    } catch (e) {
+      showToast(`Unable to open link: ${e}`, 'error');
+    }
+  }
 </script>
 
 <div class="app-root" class:dragging={isDragging}>
@@ -450,6 +470,7 @@
   <nav class="tab-bar">
     <button class:active={activePage === 'dashboard'} onclick={() => activePage = 'dashboard'}>INTERPOLATION</button>
     <button class:active={activePage === 'smoothie'} onclick={() => activePage = 'smoothie'}>SMOOTHIE</button>
+    <button class:active={activePage === 'about'} onclick={() => activePage = 'about'}>ABOUT</button>
   </nav>
 
   <!-- Main Content Area -->
@@ -704,6 +725,37 @@
           </div>
         {/if}
       {/if}
+    {:else if activePage === 'about'}
+      <section class="about-page" aria-labelledby="about-title">
+        <header class="about-header">
+          <span class="about-kicker">CIA RENDER / LOCAL DESKTOP PIPELINE</span>
+          <h1 id="about-title">ABOUT</h1>
+          <p>Local video interpolation, frame blending, and optional enhancement. Your media stays on this computer.</p>
+        </header>
+
+        <div class="about-notice">
+          <strong>NO CLOUD PROCESSING</strong>
+          <span>RIFE and Smoothie run through local runtimes. Topaz Video AI is optional, proprietary, and never bundled with CIA RENDER.</span>
+        </div>
+
+        <div class="about-grid">
+          {#each ABOUT_LINKS as link}
+            <article class="about-link-card">
+              <div>
+                <h2>{link.name}</h2>
+                <p>{link.detail}</p>
+              </div>
+              <button class="btn-pro-secondary" onclick={() => openAboutLink(link.url)}>OPEN</button>
+            </article>
+          {/each}
+        </div>
+
+        <section class="about-attribution">
+          <h2>ATTRIBUTION</h2>
+          <p>CIA RENDER is built on the Dollrunner desktop application foundation and is grateful to the open-source projects listed above.</p>
+          <p>Topaz Video AI is a trademark and proprietary product of Topaz Labs. It remains an external, local optional dependency.</p>
+        </section>
+      </section>
     {/if}
   </main>
 
@@ -945,6 +997,84 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
+  }
+
+  /* About */
+  .about-page {
+    width: min(100%, 920px);
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .about-header,
+  .about-notice,
+  .about-attribution,
+  .about-link-card {
+    background: #09090c;
+    border: 1px solid #1c1c20;
+    border-radius: 8px;
+  }
+
+  .about-header { padding: 24px; }
+  .about-kicker {
+    display: block;
+    color: #71717a;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+  .about-header h1 {
+    margin: 8px 0;
+    color: #ffffff;
+    font-size: 28px;
+    letter-spacing: 0.04em;
+  }
+  .about-header p,
+  .about-link-card p,
+  .about-attribution p {
+    color: #a1a1aa;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .about-notice {
+    display: grid;
+    grid-template-columns: 190px 1fr;
+    gap: 14px;
+    padding: 14px 16px;
+    color: #a1a1aa;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .about-notice strong,
+  .about-attribution h2,
+  .about-link-card h2 {
+    color: #e4e4e7;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+  }
+  .about-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 8px;
+  }
+  .about-link-card {
+    min-height: 86px;
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .about-link-card h2 { margin-bottom: 5px; }
+  .about-link-card .btn-pro-secondary { flex: 0 0 auto; }
+  .about-attribution { padding: 16px; }
+  .about-attribution h2 { margin-bottom: 8px; }
+  .about-attribution p + p { margin-top: 6px; }
+
+  @media (max-width: 620px) {
+    .about-notice { grid-template-columns: 1fr; }
   }
 
   /* Drop Zone */

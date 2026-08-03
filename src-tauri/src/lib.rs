@@ -8,6 +8,18 @@ use tokio::process::Command;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+const ABOUT_URLS: [&str; 9] = [
+    "https://github.com/hzwer/Practical-RIFE",
+    "https://github.com/couleur-tweak-tips/smoothie-rs",
+    "https://github.com/vapoursynth/vapoursynth",
+    "https://github.com/FFmpeg/FFmpeg",
+    "https://github.com/tauri-apps/tauri",
+    "https://github.com/sveltejs/svelte",
+    "https://github.com/IBM/plex",
+    "https://github.com/n00mkrad/flowframes",
+    "https://www.topazlabs.com/topaz-video-ai",
+];
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct VideoInfo {
     width: u32,
@@ -326,6 +338,25 @@ fn open_target_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_about_link(url: String) -> Result<(), String> {
+    if !ABOUT_URLS.contains(&url.as_str()) {
+        return Err("This About link is not supported".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| format!("Failed to open browser: {error}"))?;
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -335,7 +366,8 @@ pub fn run() {
             run_smoothie,
             open_file_dialog,
             open_target_file,
-            open_target_folder
+            open_target_folder,
+            open_about_link
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
