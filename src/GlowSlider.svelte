@@ -5,7 +5,8 @@
     max = 10,
     step = 1,
     label = '',
-    unit = ''
+    unit = '',
+    precision = 0
   } = $props();
 
   let isHovered = $state(false);
@@ -20,7 +21,7 @@
   });
 
   // Animated visual ratio (0.0 to 1.0) and hover alpha (0.0 to 1.0)
-  let vizRatio = $state((value - min) / (max - min));
+  let vizRatio = $state(0);
   let hoverAnim = $state(0);
 
   let lastTime = 0;
@@ -62,12 +63,17 @@
     tempValue = clamped;
     value = clamped;
   }
+
+  function displayValue() {
+    return Number(tempValue).toFixed(precision);
+  }
+
 </script>
 
 <div class="glow-slider-container">
   <div class="slider-header">
     <span class="slider-label">{label}</span>
-    <span class="slider-val">{Math.round(tempValue)}{unit}</span>
+    <span class="slider-val">{displayValue()}{unit}</span>
   </div>
 
   <div

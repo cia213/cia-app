@@ -96,6 +96,7 @@
 
   const DEFAULT_SMOOTHIE = {
     fps: 30,
+    blendIntensity: 1.0,
     brightness: 1.1,
     saturation: 1.1,
     contrast: 1.0,
@@ -384,6 +385,7 @@
   function smoothieOverrides() {
     return [
       `frame blending;fps;${smoothieSettings.fps}`,
+      `frame blending;intensity;${Number(smoothieSettings.blendIntensity).toFixed(1)}`,
       `color grading;brightness;${smoothieSettings.brightness}`,
       `color grading;saturation;${smoothieSettings.saturation}`,
       `color grading;contrast;${smoothieSettings.contrast}`,
@@ -776,6 +778,9 @@
             <div class="setting-row">
               <label for="mod-sm-fps" class="has-tooltip" data-tooltip="Target frame blending output FPS.">OUTPUT FPS</label>
               <input id="mod-sm-fps" type="number" min="20" max="60" bind:value={smoothieSettings.fps} />
+            </div>
+            <div class="slider-row">
+              <GlowSlider bind:value={smoothieSettings.blendIntensity} min={0} max={4} step={0.1} precision={1} label="BLEND INTENSITY:" />
             </div>
           </div>
 
