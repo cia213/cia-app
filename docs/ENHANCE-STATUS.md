@@ -77,3 +77,40 @@ ENHANCE is deferred until after portability work. If it is later implemented,
 it will be an optional runtime-probed feature: available only when a local,
 licensed Topaz runtime can successfully execute its own model presets. No
 Topaz binary, model, key, or license data belongs in this repository.
+
+## Follow-up probes (2026-08-06)
+
+The Topaz Video AI 6 GUI was started, confirmed responsive, then left open
+while the minimal `ddv-3` command was retried. It still failed with the same
+first error:
+
+```text
+DDV3_GUI_SESSION_EXIT=-22
+Model not found: ddv-3
+```
+
+The GUI was then closed normally.
+
+Its previous successful render log was found at:
+
+```text
+C:\Users\cia\AppData\Roaming\Topaz Labs LLC\Topaz Video AI\logs\2026-08-02-23-41-36-Main.tzlog
+```
+
+That log records a successful `ddv-3` export, including `Model found in list
+ddv-3`, `License heartbeat successful`, and `Video Processor setup
+successfully for model ddv-3`. Its ffmpeg command matches the preset above;
+the only command-line delta is the GUI's additional `-nostdin -y -nostats`
+arguments.
+
+One final standalone test added exactly those three arguments and nothing
+else. It also failed before encoding:
+
+```text
+DDV3_GUI_DELTA_EXIT=-22
+Model not found: ddv-3
+```
+
+This confirms that the missing behavior is not a preset option or a GUI
+command-line flag. It is private state managed by the Topaz GUI/runtime, and
+is out of scope for CIA RENDER to reproduce or bypass.
