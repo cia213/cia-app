@@ -8,7 +8,7 @@ use tokio::process::Command;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const ABOUT_URLS: [&str; 9] = [
+const ABOUT_URLS: [&str; 8] = [
     "https://github.com/hzwer/Practical-RIFE",
     "https://github.com/couleur-tweak-tips/smoothie-rs",
     "https://github.com/vapoursynth/vapoursynth",
@@ -17,7 +17,6 @@ const ABOUT_URLS: [&str; 9] = [
     "https://github.com/sveltejs/svelte",
     "https://github.com/IBM/plex",
     "https://github.com/n00mkrad/flowframes",
-    "https://www.topazlabs.com/topaz-video-ai",
 ];
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
