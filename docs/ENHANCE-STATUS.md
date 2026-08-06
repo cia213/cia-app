@@ -114,3 +114,84 @@ Model not found: ddv-3
 This confirms that the missing behavior is not a preset option or a GUI
 command-line flag. It is private state managed by the Topaz GUI/runtime, and
 is out of scope for CIA RENDER to reproduce or bypass.
+
+## Alternative engine gate: Real-ESRGAN ncnn Vulkan (2026-08-06)
+
+Decision: **red — do not implement the ENHANCE page with this runtime.**
+
+The alternative was deliberately tested as an isolated engine, with no Tauri
+or Svelte changes. The executable was the official portable Windows archive
+referenced by the Real-ESRGAN project:
+
+```text
+Archive: C:\Users\cia\Downloads\realesrgan-ncnn-vulkan-20220424-windows.zip
+SHA-256: ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D
+Runtime: C:\CIA RENDER\runtimes\realesrgan\realesrgan-ncnn-vulkan.exe
+```
+
+The test source is the exact short file used for the user's Topaz comparison:
+
+```text
+C:\Users\cia\Downloads\124124124124124-3x-RIFE-4.26-360fps_smoothie.mp4
+```
+
+Raw source probe:
+
+```text
+video: H.264, 1920x1080, 30/1 fps, 10.500000 s, 315 frames
+audio: AAC, 48000 Hz, stereo
+```
+
+The NVIDIA query and the Vulkan executable both identify the same discrete
+device as GPU 0; GPU 1 is the AMD integrated GPU:
+
+```text
+nvidia-smi: 0, NVIDIA GeForce RTX 3050 Laptop GPU, 4096 MiB, driver 610.62
+Vulkan [0]: NVIDIA GeForce RTX 3050 Laptop GPU
+Vulkan [1]: AMD Radeon(TM) Graphics
+```
+
+`realesrgan-x4plus` was used with `-g 0 -s 2 -t 128`/`-t 256`, which produces
+the required exact 3840x2160 output from the FHD source. The official archive
+does not contain `realesr-general-x4v3`; its included models are
+`realesrgan-x4plus`, `realesrgan-x4plus-anime`, and AnimeVideo v3 variants.
+No unverified model was substituted or downloaded.
+
+The first frame succeeded and was verified with ffprobe:
+
+```text
+command: realesrgan-ncnn-vulkan.exe -i frame_000001.png -o frame_000001.png \
+  -n realesrgan-x4plus -s 2 -g 0 -t 128 -j 1:1:1 -f png -v
+exit: 0
+elapsed: 24.927 s
+output: 3840x2160, rgb24, 7,167,258 bytes
+```
+
+A second, warm measurement using larger 256-pixel tiles also succeeded but
+remained far below the gate:
+
+```text
+command: realesrgan-ncnn-vulkan.exe -i frame_000001.png -o frame_000001_t256.png \
+  -n realesrgan-x4plus -s 2 -g 0 -t 256 -j 1:1:1 -f png
+exit: 0
+elapsed: 19.821 s/frame
+effective throughput: 0.05045 fps
+estimate for 315 frames: 6,243.6 s (104.1 min)
+```
+
+This is below the agreed 0.5 fps stop threshold, predicts more than one hour
+for this 10.5-second reference clip, and is roughly forty times slower than
+the user's measured 4K Topaz export (2m42s). Therefore no 100–300-frame probe,
+no full render, no MP4 sample, and no page implementation were started: the
+bounded gate already failed and additional work would not alter that decision.
+
+The two successful stills remain available solely as technical evidence:
+
+```text
+C:\Users\cia\Downloads\cia-render-realesrgan-probe-20260806\upscaled\frame_000001.png
+C:\Users\cia\Downloads\cia-render-realesrgan-probe-20260806\upscaled\frame_000001_t256.png
+```
+
+They cannot validate temporal flicker; no user visual validation is requested
+because Real-ESRGAN ncnn Vulkan was rejected on measured performance first.
+The model-weight licence still requires audit before any future redistribution.
