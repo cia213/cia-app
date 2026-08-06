@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { onMount } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
 
@@ -16,6 +17,9 @@
   let isHoveringTimer = $state(false);
   let copyFeedback = $state(false);
   let toast = $state({ show: false, message: '', type: 'info' });
+  let runtimeSnapshot = $state(null);
+  let setupDraft = $state(null);
+  let showRuntimeSetup = $state(true);
 
   // Drawers / Modal Overlays
   let showRifeSettings = $state(false);
@@ -44,6 +48,54 @@
   let rifeSettings = $state(loadRifeSettings());
   let autoRender = $state(loadAutoRender());
 
+  function cloneConfig(config) {
+    return JSON.parse(JSON.stringify(config));
+  }
+
+  function hasStoredSettings(value) {
+    return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
+  }
+
+  async function persistUiPreferences() {
+    if (!runtimeSnapshot) return;
+    try {
+      runtimeSnapshot = await invoke('save_ui_preferences', {
+        autoRender,
+        rifeSettings,
+        smoothieSettings
+      });
+    } catch (e) {
+      showToast(`Failed to save preferences: ${e}`, 'error');
+    }
+  }
+
+  async function refreshRuntimeSnapshot() {
+    runtimeSnapshot = await invoke('get_runtime_snapshot');
+    setupDraft = cloneConfig(runtimeSnapshot.config);
+    return runtimeSnapshot;
+  }
+
+  async function initializeRuntime() {
+    try {
+      const snapshot = await refreshRuntimeSnapshot();
+      if (snapshot.config.ui?.migrated) {
+        autoRender = Boolean(snapshot.config.ui.autoRender);
+        if (hasStoredSettings(snapshot.config.ui.rifeSettings)) {
+          rifeSettings = { ...DEFAULT_RIFE, ...snapshot.config.ui.rifeSettings };
+        }
+        if (hasStoredSettings(snapshot.config.ui.smoothieSettings)) {
+          smoothieSettings = { ...DEFAULT_SMOOTHIE, ...snapshot.config.ui.smoothieSettings };
+        }
+      } else {
+        await persistUiPreferences();
+      }
+      showRuntimeSetup = !(runtimeSnapshot.rifeReady && runtimeSnapshot.smoothieReady && runtimeSnapshot.mediaToolsReady);
+    } catch (e) {
+      showToast(`Runtime setup could not load: ${e}`, 'error');
+      showRuntimeSetup = true;
+    }
+  }
+
   function loadAutoRender() {
     try {
       return localStorage.getItem('rife_auto_render') === 'true';
@@ -52,12 +104,8 @@
     }
   }
 
-  function saveAutoRender() {
-    try {
-      localStorage.setItem('rife_auto_render', String(autoRender));
-    } catch {
-      showToast('Failed to save auto-render preference', 'error');
-    }
+  async function saveAutoRender() {
+    await persistUiPreferences();
   }
 
   function loadRifeSettings() {
@@ -69,18 +117,14 @@
     }
   }
 
-  function saveRifeSettings() {
-    try {
-      localStorage.setItem('rife_settings', JSON.stringify(rifeSettings));
-      showToast('RIFE settings saved to memory', 'success');
-    } catch {
-      showToast('Failed to save settings', 'error');
-    }
+  async function saveRifeSettings() {
+    await persistUiPreferences();
+    showToast('RIFE settings saved', 'success');
   }
 
-  function resetRifeSettings() {
+  async function resetRifeSettings() {
     rifeSettings = { ...DEFAULT_RIFE };
-    try { localStorage.removeItem('rife_settings'); } catch {}
+    await persistUiPreferences();
     showToast('RIFE settings reset to default', 'info');
   }
 
@@ -128,18 +172,14 @@
     }
   }
 
-  function saveSmoothieSettings() {
-    try {
-      localStorage.setItem('smoothie_settings', JSON.stringify(smoothieSettings));
-      showToast('Smoothie config saved to memory', 'success');
-    } catch {
-      showToast('Failed to save config', 'error');
-    }
+  async function saveSmoothieSettings() {
+    await persistUiPreferences();
+    showToast('Smoothie configuration saved', 'success');
   }
 
-  function resetSmoothieSettings() {
+  async function resetSmoothieSettings() {
     smoothieSettings = { ...DEFAULT_SMOOTHIE };
-    try { localStorage.removeItem('smoothie_settings'); } catch {}
+    await persistUiPreferences();
     showToast('Smoothie config reset to default', 'info');
   }
 
@@ -464,6 +504,55 @@
       showToast(`Unable to open link: ${e}`, 'error');
     }
   }
+
+  function applyDetectedRuntime() {
+    if (!runtimeSnapshot?.detected) return;
+    const detected = cloneConfig(runtimeSnapshot.detected);
+    setupDraft = {
+      ...setupDraft,
+      rife: { ...setupDraft.rife, ...detected.rife },
+      smoothie: { ...setupDraft.smoothie, ...detected.smoothie },
+      mediaTools: { ...setupDraft.mediaTools, ...detected.mediaTools }
+    };
+  }
+
+  async function browseRuntimePath(kind) {
+    try {
+      const path = await invoke('pick_runtime_path', { kind });
+      if (!path || !setupDraft) return;
+      if (kind === 'rife_python') setupDraft.rife.pythonExecutable = path;
+      if (kind === 'rife_script') setupDraft.rife.script = path;
+      if (kind === 'rife_directory') setupDraft.rife.directory = path;
+      if (kind === 'rife_model') setupDraft.rife.modelFile = path;
+      if (kind === 'smoothie_root') setupDraft.smoothie.root = path;
+      if (kind === 'smoothie_executable') setupDraft.smoothie.executable = path;
+      if (kind === 'smoothie_recipe') setupDraft.smoothie.recipe = path;
+      if (kind === 'ffmpeg') setupDraft.mediaTools.ffmpeg = path;
+      if (kind === 'ffprobe') setupDraft.mediaTools.ffprobe = path;
+    } catch (e) {
+      showToast(`Unable to select path: ${e}`, 'error');
+    }
+  }
+
+  async function saveRuntimeSetup() {
+    if (!setupDraft) return;
+    try {
+      runtimeSnapshot = await invoke('save_runtime_config', { config: setupDraft });
+      setupDraft = cloneConfig(runtimeSnapshot.config);
+      if (runtimeSnapshot.rifeReady && runtimeSnapshot.smoothieReady && runtimeSnapshot.mediaToolsReady) {
+        showRuntimeSetup = false;
+        showToast('Local runtimes are configured', 'success');
+      } else {
+        showToast('Some required runtime components are still missing', 'error');
+      }
+    } catch (e) {
+      showToast(`Unable to save runtime setup: ${e}`, 'error');
+    }
+  }
+
+  onMount(() => {
+    initializeRuntime();
+  });
 </script>
 
 <div class="app-root" class:dragging={isDragging}>
@@ -473,6 +562,7 @@
       <span class="titlebar-text">CIA RENDER</span>
     </div>
     <div class="titlebar-controls">
+      <button class="titlebar-btn setup" onclick={() => showRuntimeSetup = true} aria-label="Open runtime setup">SETUP</button>
       <button class="titlebar-btn" onclick={() => appWindow.minimize()} aria-label="Minimize">─</button>
       <button class="titlebar-btn close" onclick={() => appWindow.close()} aria-label="Close">✕</button>
     </div>
@@ -484,6 +574,74 @@
     <button class:active={activePage === 'about'} onclick={() => activePage = 'about'}>ABOUT</button>
   </nav>
 
+  {#if showRuntimeSetup}
+    <main class="runtime-setup" aria-labelledby="setup-title">
+      <section class="setup-card">
+        <header class="setup-header">
+          <span class="about-kicker">CIA RENDER / FIRST LAUNCH</span>
+          <h1 id="setup-title">LOCAL RUNTIME SETUP</h1>
+          <p>Choose the local tools that power interpolation and rendering. CIA RENDER never guesses a runtime path during a render.</p>
+        </header>
+
+        {#if !runtimeSnapshot || !setupDraft}
+          <div class="setup-loading">CHECKING LOCAL RUNTIMES…</div>
+        {:else}
+          {#if runtimeSnapshot.loadError}
+            <div class="setup-alert">{runtimeSnapshot.loadError}</div>
+          {/if}
+
+          <div class="setup-status-grid">
+            {#each runtimeSnapshot.components as component}
+              <div class:ready={component.ready} class="setup-status-item">
+                <span>{component.label}</span>
+                <strong>{component.ready ? 'READY' : 'MISSING'}</strong>
+              </div>
+            {/each}
+          </div>
+
+          <div class="setup-actions">
+            <button class="btn-pro-secondary" onclick={applyDetectedRuntime}>USE DETECTED PATHS</button>
+            <button class="btn-pro-secondary" onclick={refreshRuntimeSnapshot}>RECHECK</button>
+          </div>
+
+          <div class="setup-fields">
+            <section>
+              <h2>RIFE</h2>
+              <label for="setup-rife-python">PYTHON EXECUTABLE</label>
+              <div class="path-field"><input id="setup-rife-python" bind:value={setupDraft.rife.pythonExecutable} placeholder="Select python.exe" /><button onclick={() => browseRuntimePath('rife_python')}>BROWSE</button></div>
+              <label for="setup-rife-directory">PRACTICAL-RIFE FOLDER</label>
+              <div class="path-field"><input id="setup-rife-directory" bind:value={setupDraft.rife.directory} placeholder="Folder containing inference_video.py" /><button onclick={() => browseRuntimePath('rife_directory')}>BROWSE</button></div>
+              <label for="setup-rife-model">RIFE MODEL</label>
+              <div class="path-field"><input id="setup-rife-model" bind:value={setupDraft.rife.modelFile} placeholder="Select flownet.pkl" /><button onclick={() => browseRuntimePath('rife_model')}>BROWSE</button></div>
+              <label for="setup-rife-script">RIFE SCRIPT OVERRIDE <span>(optional)</span></label>
+              <div class="path-field"><input id="setup-rife-script" bind:value={setupDraft.rife.script} placeholder="Bundled CIA RENDER script is used by default" /><button onclick={() => browseRuntimePath('rife_script')}>BROWSE</button></div>
+            </section>
+
+            <section>
+              <h2>MEDIA TOOLS</h2>
+              <label for="setup-ffmpeg">FFMPEG</label>
+              <div class="path-field"><input id="setup-ffmpeg" bind:value={setupDraft.mediaTools.ffmpeg} placeholder="Select ffmpeg.exe" /><button onclick={() => browseRuntimePath('ffmpeg')}>BROWSE</button></div>
+              <label for="setup-ffprobe">FFPROBE</label>
+              <div class="path-field"><input id="setup-ffprobe" bind:value={setupDraft.mediaTools.ffprobe} placeholder="Select ffprobe.exe" /><button onclick={() => browseRuntimePath('ffprobe')}>BROWSE</button></div>
+
+              <h2 class="smoothie-heading">SMOOTHIE</h2>
+              <label for="setup-smoothie-root">RUNTIME FOLDER</label>
+              <div class="path-field"><input id="setup-smoothie-root" bind:value={setupDraft.smoothie.root} placeholder="Select smoothie-rs folder" /><button onclick={() => browseRuntimePath('smoothie_root')}>BROWSE</button></div>
+              <label for="setup-smoothie-executable">EXECUTABLE</label>
+              <div class="path-field"><input id="setup-smoothie-executable" bind:value={setupDraft.smoothie.executable} placeholder="Select smoothie-rs.exe" /><button onclick={() => browseRuntimePath('smoothie_executable')}>BROWSE</button></div>
+              <label for="setup-smoothie-recipe">RECIPE <span>(optional)</span></label>
+              <div class="path-field"><input id="setup-smoothie-recipe" bind:value={setupDraft.smoothie.recipe} placeholder="recipe.ini" /><button onclick={() => browseRuntimePath('smoothie_recipe')}>BROWSE</button></div>
+            </section>
+          </div>
+
+          <div class="setup-footer">
+            <span>Configuration is saved to your CIA RENDER app-data folder.</span>
+            <button class="btn-pro-primary" onclick={saveRuntimeSetup}>SAVE &amp; CONTINUE</button>
+          </div>
+        {/if}
+      </section>
+    </main>
+  {:else}
   <!-- Main Content Area -->
   <main class="content-area">
     <!-- DASHBOARD PAGE (RIFE) -->
@@ -759,6 +917,7 @@
       </section>
     {/if}
   </main>
+  {/if}
 
   <!-- RIFE SETTINGS MODAL DRAWER -->
   {#if showRifeSettings}
@@ -957,6 +1116,14 @@
 
   .titlebar-btn:hover { background: #1c1c20; color: #ffffff; }
   .titlebar-btn.close:hover { background: #dc2626; color: #ffffff; }
+  .titlebar-btn.setup {
+    width: auto;
+    padding: 0 8px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
 
   /* Navigation Tabs */
   .tab-bar {
@@ -998,6 +1165,151 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
+  }
+
+  .runtime-setup {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px;
+    background: #050507;
+  }
+
+  .setup-card {
+    width: min(100%, 920px);
+    margin: 0 auto;
+    padding: 18px;
+    background: #09090c;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+  }
+
+  .setup-header h1 {
+    margin: 5px 0 7px;
+    font-size: 20px;
+    letter-spacing: 0.04em;
+    color: #ffffff;
+  }
+
+  .setup-header p,
+  .setup-footer span {
+    color: #a1a1aa;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .setup-loading,
+  .setup-alert {
+    margin-top: 16px;
+    padding: 12px;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    color: #d4d4d8;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+
+  .setup-alert { border-color: #7f1d1d; color: #fecaca; }
+
+  .setup-status-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 16px 0 10px;
+  }
+
+  .setup-status-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    color: #a1a1aa;
+    font-size: 10px;
+  }
+
+  .setup-status-item strong {
+    color: #fca5a5;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+  }
+  .setup-status-item.ready { border-color: #3f3f46; }
+  .setup-status-item.ready strong { color: #e4e4e7; }
+
+  .setup-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .setup-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .setup-fields section {
+    padding: 14px;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+    background: #060608;
+  }
+
+  .setup-fields h2 {
+    margin: 0 0 12px;
+    color: #e4e4e7;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  .setup-fields .smoothie-heading { margin-top: 18px; }
+  .setup-fields label {
+    display: block;
+    margin: 10px 0 5px;
+    color: #71717a;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .setup-fields label span { color: #52525b; font-weight: 400; }
+
+  .path-field { display: flex; gap: 6px; }
+  .path-field input {
+    min-width: 0;
+    flex: 1;
+    padding: 7px 8px;
+    border: 1px solid #27272a;
+    border-radius: 4px;
+    background: #0d0d10;
+    color: #e4e4e7;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+  }
+  .path-field input:focus { outline: none; border-color: rgba(255, 255, 255, 0.45); }
+  .path-field button {
+    padding: 0 9px;
+    border: 1px solid #3f3f46;
+    border-radius: 4px;
+    background: #141417;
+    color: #e4e4e7;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .path-field button:hover { border-color: rgba(255, 255, 255, 0.4); }
+
+  .setup-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  @media (max-width: 720px) {
+    .setup-status-grid, .setup-fields { grid-template-columns: 1fr; }
+    .setup-footer { align-items: flex-end; flex-direction: column; }
   }
 
   /* About */
