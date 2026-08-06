@@ -137,14 +137,6 @@ async fn analyze_video(video_path: String) -> Result<VideoInfo, String> {
     probe_video(&video_path).await
 }
 
-fn format_factor(factor: f64) -> String {
-    if (factor - factor.round()).abs() < f64::EPSILON {
-        format!("{:.0}", factor)
-    } else {
-        factor.to_string()
-    }
-}
-
 fn rife_output_path(video_path: &str, mode: &str, factor: f64, input_fps: f64) -> Result<PathBuf, String> {
     if !factor.is_finite() || factor <= 0.0 {
         return Err("Interpolation factor must be greater than zero".to_string());
@@ -167,11 +159,23 @@ fn rife_output_path(video_path: &str, mode: &str, factor: f64, input_fps: f64) -
         return Err("Unable to derive a valid output framerate".to_string());
     }
 
-    Ok(parent.join(format!(
-        "{stem}-{}x-RIFE-4.26-{}fps.mp4",
-        format_factor(factor),
-        output_fps as u64
-    )))
+    Ok(parent.join(format!("{stem}-{}fps.mp4", output_fps as u64)))
+}
+
+fn smoothie_output_path(video_path: &str, output_fps: u32) -> Result<PathBuf, String> {
+    if output_fps == 0 {
+        return Err("Smoothie output framerate must be greater than zero".to_string());
+    }
+
+    let input = Path::new(video_path);
+    let parent = input.parent().unwrap_or_else(|| Path::new(""));
+    let stem = input
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or("Unable to derive the Smoothie output filename")?;
+
+    Ok(parent.join(format!("{stem}_render{output_fps}fps.mp4")))
 }
 
 fn ensure_nonempty_file(path: &Path, label: &str) -> Result<(), String> {
@@ -179,6 +183,16 @@ fn ensure_nonempty_file(path: &Path, label: &str) -> Result<(), String> {
         .map_err(|error| format!("{label} output is missing: {} ({error})", path.display()))?;
     if !metadata.is_file() || metadata.len() == 0 {
         return Err(format!("{label} output is invalid: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn ensure_destination_available(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!(
+            "Refusing to overwrite an existing output: {}",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -198,6 +212,7 @@ async fn run_time_remap(
     let script_path = r"C:\Users\cia\time-remap-app\time_remap.py";
     let info = probe_video(&video_path).await?;
     let out_path = rife_output_path(&video_path, &mode, factor, info.fps)?;
+    ensure_destination_available(&out_path)?;
 
     if !Path::new(python_exe).is_file() || !Path::new(script_path).is_file() {
         return Err("The local RIFE runtime is unavailable".to_string());
@@ -212,6 +227,7 @@ async fn run_time_remap(
         .arg("--preset").arg(&preset)
         .arg("--scene_threshold").arg(scene_threshold.to_string())
         .arg("--blend-cuts").arg(blend_cuts.to_string())
+        .arg("--output").arg(&out_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -242,7 +258,12 @@ async fn run_time_remap(
 }
 
 #[tauri::command]
-async fn run_smoothie(app: tauri::AppHandle, video_path: String, overrides: Vec<String>) -> Result<String, String> {
+async fn run_smoothie(
+    app: tauri::AppHandle,
+    video_path: String,
+    output_fps: u32,
+    overrides: Vec<String>,
+) -> Result<String, String> {
     let smoothie_dir = r"C:\Users\cia\Music\smoothie1";
     let smoothie_exe = r"C:\Users\cia\Music\smoothie1\bin\smoothie-rs.exe";
 
@@ -250,12 +271,8 @@ async fn run_smoothie(app: tauri::AppHandle, video_path: String, overrides: Vec<
         return Err("The local smoothie-rs runtime is unavailable".to_string());
     }
 
-    let out_path = {
-        let p = std::path::Path::new(&video_path);
-        let dir = p.parent().unwrap_or(std::path::Path::new(""));
-        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-        dir.join(format!("{}_smoothie.mp4", stem))
-    };
+    let out_path = smoothie_output_path(&video_path, output_fps)?;
+    ensure_destination_available(&out_path)?;
     let out_path_str = out_path.to_string_lossy().to_string();
 
     let mut cmd = Command::new(smoothie_exe);
@@ -371,4 +388,24 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rife_output_path, smoothie_output_path};
+
+    #[test]
+    fn interpolation_name_uses_only_the_actual_output_fps() {
+        let output = rife_output_path(r"C:\media\clip.mp4", "boost", 12.0, 30.0).unwrap();
+        assert_eq!(output, std::path::PathBuf::from(r"C:\media\clip-360fps.mp4"));
+    }
+
+    #[test]
+    fn smoothie_name_uses_its_input_stem_and_selected_fps() {
+        let output = smoothie_output_path(r"C:\media\clip-360fps.mp4", 30).unwrap();
+        assert_eq!(
+            output,
+            std::path::PathBuf::from(r"C:\media\clip-360fps_render30fps.mp4")
+        );
+    }
 }

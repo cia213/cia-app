@@ -418,7 +418,11 @@
     if (!preserveLogs) resetRunState();
     else resetTelemetry();
     appendLog('[CIA RENDER] SMOOTHIE started');
-    return invoke('run_smoothie', { videoPath: inputPath, overrides: smoothieOverrides() });
+    return invoke('run_smoothie', {
+      videoPath: inputPath,
+      outputFps: Number(smoothieSettings.fps),
+      overrides: smoothieOverrides()
+    });
   }
 
   async function startSmoothie() {
