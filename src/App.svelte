@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
-  import appLogo from '../src-tauri/icons/cia-render.svg';
+  import appLogo from '../src-tauri/icons/128x128@2x.png';
 
   const appWindow =
     typeof window !== 'undefined' && window.__TAURI_INTERNALS__
