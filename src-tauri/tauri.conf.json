@@ -1,5 +1,5 @@
 {
-  "productName": "CIA RENDER",
+  "productName": "cia app",
   "version": "1.0.0",
   "identifier": "com.ciarender.desktop",
   "build": {
@@ -12,7 +12,7 @@
     "active": true,
     "targets": ["nsis"],
     "shortDescription": "Local video interpolation and rendering.",
-    "longDescription": "CIA RENDER is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
+    "longDescription": "cia app is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
     "resources": [
       "resources/time_remap.py",
       "resources/runtime",
@@ -29,7 +29,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "startMenuFolder": "CIA RENDER",
+        "startMenuFolder": "cia app",
         "displayLanguageSelector": false,
         "compression": "lzma"
       }
@@ -39,7 +39,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "CIA RENDER",
+        "title": "cia app",
         "width": 920,
         "height": 540,
         "resizable": false,

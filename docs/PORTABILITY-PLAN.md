@@ -1,10 +1,10 @@
-# CIA RENDER V1 — runtime and distribution notes
+# cia app V1 — runtime and distribution notes
 
 ## What the NSIS installer contains
 
-- CIA RENDER Tauri executable and local Svelte assets;
+- cia app Tauri executable and local Svelte assets;
 - IBM Plex font assets included by the frontend build;
-- the CIA RENDER RIFE orchestration script;
+- the cia app RIFE orchestration script;
 - Start Menu shortcut and a current-user uninstaller.
 
 ## What remains external in V1
@@ -48,7 +48,7 @@ The configuration is written atomically in the per-user app-data directory:
 }
 ```
 
-`script: null` selects CIA RENDER's bundled RIFE orchestration script. The
+`script: null` selects cia app's bundled RIFE orchestration script. The
 optional override exists for advanced local workflows. Runtime paths are
 validated at startup; only explicit saved paths are used at render time.
 

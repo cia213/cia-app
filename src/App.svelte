@@ -271,7 +271,7 @@
     try {
       await invoke(isRenderPaused ? 'resume_render' : 'pause_render', { jobId: activeRenderJobId });
       isRenderPaused = !isRenderPaused;
-      appendLog(`[CIA RENDER] RIFE ${isRenderPaused ? 'paused' : 'resumed'} by user`);
+      appendLog(`[cia app] RIFE ${isRenderPaused ? 'paused' : 'resumed'} by user`);
       showToast(isRenderPaused ? 'Interpolation paused' : 'Interpolation resumed', 'info');
     } catch (e) {
       showToast(`Unable to ${isRenderPaused ? 'resume' : 'pause'} interpolation: ${e}`, 'error');
@@ -284,7 +284,7 @@
     isCancellingRender = true;
     try {
       await invoke('cancel_render', { jobId: activeRenderJobId });
-      appendLog('[CIA RENDER] Cancellation requested by user');
+      appendLog('[cia app] Cancellation requested by user');
     } catch (e) {
       showToast(`Unable to cancel render: ${e}`, 'error');
       isCancellingRender = false;
@@ -402,7 +402,7 @@
     isRenderPaused = false;
     isCancellingRender = false;
     beginLogCapture();
-    appendLog('[CIA RENDER] RIFE 4.26 started');
+    appendLog('[cia app] RIFE 4.26 started');
     try {
       const outputPath = await invoke('run_time_remap', {
         jobId: activeRenderJobId,
@@ -416,14 +416,14 @@
       });
       rifeOutputPath = outputPath;
       lastOutputPath = outputPath;
-      appendLog(`[CIA RENDER] RIFE output verified: ${outputPath}`);
+      appendLog(`[cia app] RIFE output verified: ${outputPath}`);
 
       if (autoRender) {
         jobPhase = 'smoothie';
         isRenderPaused = false;
         const smoothiePath = await runSmoothieFor(outputPath, { preserveLogs: true, jobId: activeRenderJobId });
         lastOutputPath = smoothiePath;
-        appendLog(`[CIA RENDER] Smoothie output verified: ${smoothiePath}`);
+        appendLog(`[cia app] Smoothie output verified: ${smoothiePath}`);
       }
 
       progress = 100;
@@ -478,7 +478,7 @@
     try {
       const smoothiePath = await runSmoothieFor(rifeOutputPath, { preserveLogs: true, jobId: activeRenderJobId });
       lastOutputPath = smoothiePath;
-      appendLog(`[CIA RENDER] Smoothie output verified: ${smoothiePath}`);
+      appendLog(`[cia app] Smoothie output verified: ${smoothiePath}`);
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
@@ -549,7 +549,7 @@
   async function runSmoothieFor(inputPath, { preserveLogs = false, jobId = createRenderJobId() } = {}) {
     if (!preserveLogs) beginLogCapture();
     else resetTelemetry();
-    appendLog('[CIA RENDER] SMOOTHIE started');
+    appendLog('[cia app] SMOOTHIE started');
     return invoke('run_smoothie', {
       jobId,
       videoPath: inputPath,
@@ -606,7 +606,7 @@
     if (isInstallingRifeEnvironment) return;
     isInstallingRifeEnvironment = true;
     beginLogCapture();
-    appendLog('[CIA RENDER] Checking for an available RIFE environment');
+    appendLog('[cia app] Checking for an available RIFE environment');
     try {
       runtimeSnapshot = await invoke('install_rife_environment');
       setupDraft = cloneConfig(runtimeSnapshot.config);
@@ -672,7 +672,7 @@
   <!-- Custom Windows Titlebar -->
   <div class="titlebar" data-tauri-drag-region>
     <div class="titlebar-brand">
-      <span class="titlebar-text">CIA RENDER</span>
+      <span class="titlebar-text">cia app</span>
     </div>
     <div class="titlebar-controls">
       <button class="titlebar-btn setup" onclick={() => showRuntimeSetup = true} aria-label="Open runtime repair">RUNTIME</button>
@@ -691,7 +691,7 @@
     <main class="runtime-setup" aria-labelledby="setup-title">
       <section class="setup-card">
         <header class="setup-header">
-          <span class="about-kicker">CIA RENDER / RUNTIME REPAIR</span>
+            <span class="about-kicker">cia app / RUNTIME REPAIR</span>
           <h1 id="setup-title">ADVANCED RUNTIME PATHS</h1>
           <p>RENDER works with the bundled Smoothie and media tools. Use this panel only to repair an installation or supply a custom RIFE runtime.</p>
         </header>
@@ -727,7 +727,7 @@
               <label for="setup-rife-model">RIFE MODEL</label>
               <div class="path-field"><input id="setup-rife-model" bind:value={setupDraft.rife.modelFile} placeholder="Select flownet.pkl" /><button onclick={() => browseRuntimePath('rife_model')}>BROWSE</button></div>
               <label for="setup-rife-script">RIFE SCRIPT OVERRIDE <span>(optional)</span></label>
-              <div class="path-field"><input id="setup-rife-script" bind:value={setupDraft.rife.script} placeholder="Bundled CIA RENDER script is used by default" /><button onclick={() => browseRuntimePath('rife_script')}>BROWSE</button></div>
+              <div class="path-field"><input id="setup-rife-script" bind:value={setupDraft.rife.script} placeholder="Bundled cia app script is used by default" /><button onclick={() => browseRuntimePath('rife_script')}>BROWSE</button></div>
             </section>
 
             <section>
@@ -748,7 +748,7 @@
           </div>
 
           <div class="setup-footer">
-            <span>Configuration is saved to your CIA RENDER app-data folder.</span>
+            <span>Configuration is saved to your cia app app-data folder.</span>
             <button class="btn-pro-primary" onclick={saveRuntimeSetup}>SAVE &amp; CONTINUE</button>
           </div>
         {/if}
@@ -1043,13 +1043,12 @@
     {:else if activePage === 'about'}
       <section class="about-page" aria-label="Project credits">
         <header class="about-identity">
-          <img class="about-app-logo" src={appLogo} alt="CIA RENDER logo" />
+          <img class="about-app-logo" src={appLogo} alt="cia app logo" />
           <div class="about-app-copy">
-            <span class="about-kicker">CIA RENDER / ABOUT</span>
-            <h1>CIA RENDER <span>V{appVersion}</span></h1>
+            <h1>cia app <span>V{appVersion}</span></h1>
             <p>Local render workflow, credits and contact.</p>
           </div>
-          <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy CIA RENDER Discord handle">
+          <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia app Discord handle">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
             <span>{discordCopyFeedback ? 'COPIED' : 'cia2013'}</span>
           </button>

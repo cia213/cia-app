@@ -1,6 +1,6 @@
 # Third-party notices
 
-CIA RENDER bundles the render payload described below. The optional RIFE
+cia app bundles the render payload described below. The optional RIFE
 environment is downloaded only after the user selects **INSTALL ENVIRONMENT**.
 Every public release must preserve the notices that ship alongside its staged
 runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.

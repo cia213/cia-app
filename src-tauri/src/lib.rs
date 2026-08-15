@@ -338,7 +338,7 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map(|dir| dir.join("config.json"))
-        .map_err(|error| format!("Unable to resolve the CIA RENDER config directory: {error}"))
+        .map_err(|error| format!("Unable to resolve the cia app config directory: {error}"))
 }
 
 fn load_config(app: &tauri::AppHandle) -> Result<RuntimeConfig, String> {
@@ -400,7 +400,7 @@ fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), Stri
 
 fn write_config(app: &tauri::AppHandle, config: &RuntimeConfig) -> Result<(), String> {
     let path = config_path(app)?;
-    let parent = path.parent().ok_or("Invalid CIA RENDER config path")?;
+    let parent = path.parent().ok_or("Invalid cia app config path")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
 
@@ -472,7 +472,7 @@ fn rife_install_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|directory| directory.join("runtimes").join("rife"))
-        .map_err(|error| format!("Unable to resolve the CIA RENDER runtime directory: {error}"))
+        .map_err(|error| format!("Unable to resolve the cia app runtime directory: {error}"))
 }
 
 fn effective_rife_script(config: &RuntimeConfig, app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -613,7 +613,7 @@ fn snapshot_from_config(
         ),
         component_status(
             "rife_script",
-            "CIA RENDER RIFE script",
+            "cia app RIFE script",
             script.clone(),
             "Bundled script or explicit time_remap.py",
         ),
@@ -696,7 +696,7 @@ fn media_tools(config: &RuntimeConfig, app: &tauri::AppHandle) -> Result<MediaTo
     ) {
         (Some(ffmpeg), Some(ffprobe)) => Ok(MediaToolPaths { ffmpeg, ffprobe }),
         _ => bundled_media_tools(app).ok_or_else(|| {
-            "Bundled FFmpeg tools are unavailable. Reinstall CIA RENDER or configure Runtime paths."
+            "Bundled FFmpeg tools are unavailable. Reinstall cia app or configure Runtime paths."
                 .to_string()
         }),
     }
@@ -715,7 +715,7 @@ fn rife_runtime(
         return Err("RIFE model must point to flownet.pkl".to_string());
     }
     let script = effective_rife_script(config, app)
-        .ok_or("CIA RENDER RIFE script is unavailable. Reinstall the application or configure the script path.")?;
+        .ok_or("cia app RIFE script is unavailable. Reinstall the application or configure the script path.")?;
 
     Ok(RifeRuntimePaths {
         python: required_file(&config.rife.python_executable, "Python runtime")?,
@@ -744,7 +744,7 @@ fn smoothie_runtime(
                 .to_path_buf(),
         }),
         _ => bundled_smoothie_runtime(app, &media).ok_or_else(|| {
-            "Bundled Smoothie is unavailable. Reinstall CIA RENDER or configure Runtime paths."
+            "Bundled Smoothie is unavailable. Reinstall cia app or configure Runtime paths."
                 .to_string()
         }),
     }
@@ -1049,7 +1049,7 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
     if rife_runtime(&configured, &app).is_ok() {
         let _ = app.emit(
             "live-log",
-            "[CIA RENDER] A configured RIFE environment is already ready.",
+            "[cia app] A configured RIFE environment is already ready.",
         );
         return Ok(runtime_snapshot(&app));
     }
@@ -1062,21 +1062,21 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
         write_config(&app, &adopted)?;
         let _ = app.emit(
             "live-log",
-            "[CIA RENDER] A complete local RIFE runtime was detected and is now in use.",
+            "[cia app] A complete local RIFE runtime was detected and is now in use.",
         );
         return Ok(runtime_snapshot(&app));
     }
 
     let _ = app.emit(
         "live-log",
-        "[CIA RENDER] No complete local RIFE runtime was found. Installing the optional environment…",
+        "[cia app] No complete local RIFE runtime was found. Installing the optional environment…",
     );
     let bootstrap = bundled_resource(&app, "bootstrap/bootstrap-rife.ps1")
         .filter(|path| path.is_file())
-        .ok_or("The bundled RIFE installer script is missing. Reinstall CIA RENDER.")?;
+        .ok_or("The bundled RIFE installer script is missing. Reinstall cia app.")?;
     let python_installer = bundled_resource(&app, "bootstrap/python-3.11.9-amd64.exe")
         .filter(|path| path.is_file())
-        .ok_or("The bundled Python installer is missing. Reinstall CIA RENDER.")?;
+        .ok_or("The bundled Python installer is missing. Reinstall cia app.")?;
     let root = rife_install_root(&app)?;
     fs::create_dir_all(&root)
         .map_err(|error| format!("Unable to create {}: {error}", root.display()))?;
@@ -1433,7 +1433,7 @@ pub fn run() {
             open_about_link
         ])
         .run(tauri::generate_context!())
-        .expect("error while running CIA RENDER");
+        .expect("error while running cia app");
 }
 
 #[cfg(test)]

@@ -160,7 +160,7 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CIA RENDER RIFE orchestration")
+    parser = argparse.ArgumentParser(description="cia app RIFE orchestration")
     parser.add_argument("--video", required=True)
     parser.add_argument("--mode", choices=["slowmo", "boost"], default="slowmo")
     parser.add_argument("--factor", type=float, default=2.0)

@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# This script only writes below RuntimeRoot, which CIA RENDER resolves inside its
+# This script only writes below RuntimeRoot, which cia app resolves inside its
 # per-user application data. Nothing is installed system-wide or added to PATH.
 $PythonHome = Join-Path $RuntimeRoot 'python'
 $VenvRoot = Join-Path $RuntimeRoot 'venv'
@@ -16,7 +16,7 @@ $Staging = Join-Path $RuntimeRoot '.download-staging'
 $ExpectedModelHash = '45C7F74156704769DC9F85CFCAF8552E1E926F9399DCFA3A553DEE88FAC6F53F'
 
 function Write-Step([string]$Message) {
-  Write-Output "CIA RENDER SETUP: $Message"
+  Write-Output "cia app SETUP: $Message"
 }
 
 function Assert-ExitCode([string]$Step) {
