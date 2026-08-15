@@ -1,7 +1,7 @@
 {
   "productName": "cia app",
   "version": "1.0.0",
-  "identifier": "com.ciarender.desktop",
+  "identifier": "io.github.cia213.ciaapp",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",

@@ -15,6 +15,7 @@ use tokio::process::Command;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const CONFIG_SCHEMA_VERSION: u32 = 1;
+const LEGACY_IDENTIFIER: &str = "com.ciarender.desktop";
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/cia213/cia-app";
 const ABOUT_URLS: [&str; 9] = [
     PROJECT_REPOSITORY_URL,
@@ -343,7 +344,42 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Unable to resolve the cia app config directory: {error}"))
 }
 
+fn migrate_legacy_config(app: &tauri::AppHandle) {
+    let new_path = match config_path(app) {
+        Ok(path) => path,
+        Err(_) => return,
+    };
+    if new_path.exists() {
+        return;
+    }
+    let legacy_path = match env::var_os("APPDATA") {
+        Some(appdata) => PathBuf::from(appdata)
+            .join(LEGACY_IDENTIFIER)
+            .join("config.json"),
+        None => return,
+    };
+    if !legacy_path.is_file() {
+        return;
+    }
+    if let Some(parent) = new_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match fs::copy(&legacy_path, &new_path) {
+        Ok(_) => println!(
+            "[cia app] Migrated config from {} to {}",
+            legacy_path.display(),
+            new_path.display()
+        ),
+        Err(error) => eprintln!(
+            "[cia app] Config migration failed: {} -> {}: {error}",
+            legacy_path.display(),
+            new_path.display()
+        ),
+    }
+}
+
 fn load_config(app: &tauri::AppHandle) -> Result<RuntimeConfig, String> {
+    migrate_legacy_config(app);
     let path = config_path(app)?;
     if !path.exists() {
         return Ok(RuntimeConfig::default());
