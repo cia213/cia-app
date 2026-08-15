@@ -10,6 +10,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "shortDescription": "Local video interpolation and rendering.",
     "longDescription": "cia app is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
@@ -32,6 +33,17 @@
         "startMenuFolder": "cia app",
         "displayLanguageSelector": false,
         "compression": "lzma"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIwREI5RTEwM0VEQTM2QzQKUldURU50bytFSjdiSURuejUrUjJ1N2JOMjJxS1pMYzBKN1JmN003YUhQaFU4MDNGT3dHcVVMVXYK",
+      "endpoints": [
+        "https://github.com/cia213/cia-app/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   },

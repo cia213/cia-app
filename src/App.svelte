@@ -2,6 +2,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { check } from '@tauri-apps/plugin-updater';
+  import { relaunch } from '@tauri-apps/plugin-process';
   import { onMount } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
@@ -31,6 +33,14 @@
   let appVersion = $state('1.0.0');
   let discordCopyFeedback = $state(false);
   let shouldShowExecutionLogs = $state(false);
+
+  // Auto-Updater State
+  let updateState = $state('idle'); // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
+  let availableUpdate = $state(null);
+  let updateDownloadedBytes = $state(0);
+  let updateContentLength = $state(0);
+  let updateErrorMessage = $state('');
+  let showUpdateModal = $state(false);
 
   // Drawers / Modal Overlays
   let showRifeSettings = $state(false);
@@ -679,8 +689,82 @@
     }
   }
 
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+  }
+
+  async function checkForAppUpdates(manual = false) {
+    if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return;
+    try {
+      updateState = 'checking';
+      updateErrorMessage = '';
+      const update = await check();
+      if (update && update.available) {
+        availableUpdate = update;
+        updateState = 'available';
+        if (manual) {
+          showUpdateModal = true;
+        }
+      } else {
+        availableUpdate = null;
+        updateState = 'up-to-date';
+        if (manual) {
+          showToast('cia app is up to date', 'success');
+        }
+      }
+    } catch (err) {
+      console.error('Update check failed:', err);
+      updateErrorMessage = String(err?.message || err);
+      updateState = 'error';
+      if (manual) {
+        showToast(`Update check failed: ${updateErrorMessage}`, 'error');
+      }
+    }
+  }
+
+  async function installAppUpdate() {
+    if (!availableUpdate) return;
+    try {
+      updateState = 'downloading';
+      updateDownloadedBytes = 0;
+      updateContentLength = 0;
+
+      let downloaded = 0;
+      let contentLength = 0;
+
+      await availableUpdate.downloadAndInstall((event) => {
+        switch (event.event) {
+          case 'Started':
+            contentLength = event.data.contentLength ?? 0;
+            updateContentLength = contentLength;
+            break;
+          case 'Progress':
+            downloaded += event.data.chunkLength;
+            updateDownloadedBytes = downloaded;
+            break;
+          case 'Finished':
+            updateState = 'ready';
+            break;
+        }
+      });
+
+      showToast('Update installed. Restarting cia app...', 'success');
+      await relaunch();
+    } catch (err) {
+      console.error('Update install failed:', err);
+      updateErrorMessage = String(err?.message || err);
+      updateState = 'error';
+      showToast(`Update installation failed: ${updateErrorMessage}`, 'error');
+    }
+  }
+
   onMount(() => {
     initializeRuntime();
+    checkForAppUpdates(false);
   });
 </script>
 
@@ -691,6 +775,11 @@
       <span class="titlebar-text">cia app</span>
     </div>
     <div class="titlebar-controls">
+      {#if availableUpdate}
+        <button class="titlebar-btn update-badge" onclick={() => showUpdateModal = true} aria-label="Update available">
+          <span class="update-badge-dot"></span> UPDATE V{availableUpdate.version}
+        </button>
+      {/if}
       <button class="titlebar-btn setup" onclick={() => showRuntimeSetup = true} aria-label="Open runtime repair">RUNTIME</button>
       <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>-</button>
       <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>X</button>
@@ -1074,6 +1163,15 @@
             <p>Local render workflow, credits and contact.</p>
           </div>
           <div class="about-contacts">
+            <button class="about-update-btn" onclick={() => checkForAppUpdates(true)} aria-label="Check for cia app updates" disabled={updateState === 'checking' || updateState === 'downloading'}>
+              {#if updateState === 'checking'}
+                <span>CHECKING...</span>
+              {:else if availableUpdate}
+                <span class="update-ready-text"><span class="pro-dot active"></span> UPDATE V{availableUpdate.version}</span>
+              {:else}
+                <span>CHECK FOR UPDATES</span>
+              {/if}
+            </button>
             <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia app Discord handle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
               <span>{discordCopyFeedback ? 'COPIED' : 'cia2013'}</span>
@@ -1241,6 +1339,66 @@
         <div class="modal-footer">
           <button class="btn-secondary" onclick={resetSmoothieSettings}>RESET DEFAULTS</button>
           <button class="btn-primary-modal" onclick={() => { saveSmoothieSettings(); showSmoothieSettings = false; }}>SAVE CONFIG</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Auto-Updater Modal Overlay -->
+  {#if showUpdateModal && availableUpdate}
+    <div class="modal-backdrop" onclick={(e) => { if (e.target === e.currentTarget && updateState !== 'downloading') showUpdateModal = false; }} role="presentation">
+      <div class="modal-card update-modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
+        <div class="modal-header">
+          <h2>UPDATE AVAILABLE - V{availableUpdate.version}</h2>
+          {#if updateState !== 'downloading'}
+            <button class="btn-close-modal" onclick={() => showUpdateModal = false}>X</button>
+          {/if}
+        </div>
+        <div class="modal-body">
+          <div class="update-version-banner">
+            <span class="pro-dot active"></span>
+            <span>A new version of cia app is ready to install (current: V{appVersion})</span>
+          </div>
+          {#if availableUpdate.body}
+            <div class="update-notes-box">
+              <div class="update-notes-title">RELEASE NOTES</div>
+              <div class="update-notes-content">{availableUpdate.body}</div>
+            </div>
+          {/if}
+          {#if updateState === 'downloading'}
+            <div class="update-downloading-box">
+              <div class="install-progress-header">
+                <span class="pro-dot active"></span>
+                <span>DOWNLOADING & INSTALLING UPDATE</span>
+              </div>
+              <div class="pro-progress-row">
+                <div class="pro-track">
+                  <div class="pro-fill" style="width: {updateContentLength > 0 ? Math.min(100, (updateDownloadedBytes / updateContentLength) * 100) : 0}%"></div>
+                </div>
+                <span class="pro-percent-readout">
+                  {updateContentLength > 0 ? Math.round((updateDownloadedBytes / updateContentLength) * 100) : 0}%
+                </span>
+              </div>
+              <div class="update-bytes-readout">
+                {formatBytes(updateDownloadedBytes)} / {updateContentLength > 0 ? formatBytes(updateContentLength) : '...'}
+              </div>
+            </div>
+          {:else if updateState === 'ready'}
+            <div class="update-ready-box">
+              <span class="pro-dot active"></span>
+              <span>UPDATE APPLIED - RESTARTING CIA APP...</span>
+            </div>
+          {:else if updateState === 'error'}
+            <div class="setup-alert" style="margin-top: 14px;">{updateErrorMessage}</div>
+          {/if}
+        </div>
+        <div class="modal-footer">
+          {#if updateState === 'downloading' || updateState === 'ready'}
+            <span class="update-installing-status">Please wait while the update finishes...</span>
+          {:else}
+            <button class="btn-pro-secondary" onclick={() => showUpdateModal = false}>LATER</button>
+            <button class="btn-primary-modal" onclick={installAppUpdate}>UPDATE & RELAUNCH</button>
+          {/if}
         </div>
       </div>
     </div>
@@ -2579,5 +2737,139 @@
     font-weight: 700;
     letter-spacing: 0.05em;
     z-index: 5000;
+  }
+
+  /* Auto-Updater Styling */
+  .titlebar-btn.update-badge {
+    width: auto;
+    padding: 0 8px;
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .titlebar-btn.update-badge:hover {
+    background: rgba(34, 197, 94, 0.25);
+    border-color: #4ade80;
+    color: #ffffff;
+  }
+  .update-badge-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 6px #4ade80;
+  }
+
+  .about-update-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 10px;
+    border: 1px solid #27272a;
+    border-radius: 5px;
+    background: #0d0d10;
+    color: #d4d4d8;
+    cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  }
+  .about-update-btn:hover:not(:disabled) {
+    background: #18181b;
+    border-color: #52525b;
+    color: #ffffff;
+  }
+  .about-update-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .update-ready-text {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #4ade80;
+  }
+
+  .update-modal-card {
+    width: 500px;
+  }
+  .update-version-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: #f4f4f5;
+    margin-bottom: 14px;
+  }
+  .update-notes-box {
+    margin-bottom: 16px;
+  }
+  .update-notes-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: #71717a;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .update-notes-content {
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: #a1a1aa;
+    line-height: 1.5;
+    max-height: 120px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+  .update-downloading-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    background: #050507;
+    border: 1px solid #1c1c20;
+    border-radius: 6px;
+  }
+  .update-bytes-readout {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: #71717a;
+    text-align: right;
+  }
+  .update-ready-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 6px;
+    color: #4ade80;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .update-installing-status {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: #71717a;
   }
 </style>
