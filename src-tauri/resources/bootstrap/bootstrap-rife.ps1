@@ -34,7 +34,7 @@ if (-not (Test-Path -LiteralPath $PythonInstaller -PathType Leaf)) {
 
 $BasePython = Join-Path $PythonHome 'python.exe'
 if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) {
-  Write-Step 'Installing the bundled Python 3.11 runtime…'
+  Write-Step 'Installing the bundled Python 3.11 runtime...'
   & $PythonInstaller /quiet InstallAllUsers=0 "TargetDir=$PythonHome" Include_pip=1 Include_test=0 Include_tcltk=0 Include_launcher=0 PrependPath=0
   Assert-ExitCode 'Python installation'
 }
@@ -44,12 +44,12 @@ if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) {
 
 $VenvPython = Join-Path $VenvRoot 'Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
-  Write-Step 'Creating the isolated RIFE environment…'
+  Write-Step 'Creating the isolated RIFE environment...'
   & $BasePython -m venv $VenvRoot
   Assert-ExitCode 'Virtual environment creation'
 }
 
-Write-Step 'Installing RIFE dependencies (this is the largest download)…'
+Write-Step 'Installing RIFE dependencies (this is the largest download)...'
 & $VenvPython -m pip install --disable-pip-version-check --upgrade pip
 Assert-ExitCode 'pip upgrade'
 & $VenvPython -m pip install --disable-pip-version-check `
@@ -60,7 +60,7 @@ Assert-ExitCode 'RIFE support dependencies'
 Assert-ExitCode 'CUDA PyTorch dependencies'
 
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'inference_video.py') -PathType Leaf)) {
-  Write-Step 'Downloading Practical-RIFE…'
+  Write-Step 'Downloading Practical-RIFE...'
   $ProjectZip = Join-Path $Staging 'practical-rife.zip'
   Invoke-WebRequest -UseBasicParsing `
     -Uri 'https://github.com/hzwer/Practical-RIFE/archive/17d8c7a1005b37f4c97bfee04e316aaec7fdc536.zip' `
@@ -80,7 +80,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'inference_video.py') -
 }
 
 if (-not (Test-Path -LiteralPath $ModelTarget -PathType Leaf)) {
-  Write-Step 'Downloading the official RIFE 4.26 model…'
+  Write-Step 'Downloading the official RIFE 4.26 model...'
   $ModelDownload = Join-Path $Staging 'rife-4.26-model.download'
   Invoke-WebRequest -UseBasicParsing `
     -Uri 'https://drive.usercontent.google.com/download?id=1gViYvvQrtETBgU1w8axZSsr7YUuw31uy&export=download&confirm=t' `
@@ -110,7 +110,7 @@ if ($ModelHash -ne $ExpectedModelHash) {
   throw "The downloaded RIFE model hash does not match the expected 4.26 model. Got $ModelHash"
 }
 
-Write-Step 'Checking CUDA availability…'
+Write-Step 'Checking CUDA availability...'
 & $VenvPython -c "import torch; assert torch.cuda.is_available(), 'CUDA-capable NVIDIA GPU not available'; print(torch.__version__); print(torch.cuda.get_device_name(0))"
 Assert-ExitCode 'CUDA verification'
 

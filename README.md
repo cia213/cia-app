@@ -2,11 +2,13 @@
 
 cia app is a local Windows desktop workflow for two video operations:
 
-- **RENDER** — smoothie-rs frame blending and render finishing.
-- **INTERPOLATION** — optional RIFE frame multiplication.
+- **RENDER** - smoothie-rs frame blending and render finishing.
+- **INTERPOLATION** - optional RIFE frame multiplication.
 
 Your media stays on the computer. cia app does not upload source videos or
 silently fetch render engines.
+
+Source code and Windows releases: [github.com/cia213/cia-app](https://github.com/cia213/cia-app)
 
 ## Install and first launch
 
@@ -21,8 +23,8 @@ environment into cia app's per-user app-data folder. This is a large
 download, requires a CUDA-capable NVIDIA GPU, and is never downloaded by the
 installer or by merely launching the app.
 
-The **RUNTIME** control is an advanced repair panel only. It can point CIA
-RENDER to an existing RIFE installation if the optional installer is not the
+The **RUNTIME** control is an advanced repair panel only. It can point cia app
+to an existing RIFE installation if the optional installer is not the
 right fit. It is not part of the normal first-run flow.
 
 The bundled render tools are resolved from the installed application, and the
@@ -42,7 +44,7 @@ process. The UI never reconstructs a filename.
 | --- | --- |
 | RIFE at 360 FPS | `clip-360fps.mp4` |
 | Smoothie at 30 FPS | `clip_render30fps.mp4` |
-| Auto-chain RIFE 360 → Smoothie 30 | `clip-360fps_render30fps.mp4` |
+| Auto-chain RIFE 360 to Smoothie 30 | `clip-360fps_render30fps.mp4` |
 
 Existing destinations are never overwritten silently.
 When an output already exists, cia app preserves it and selects the first

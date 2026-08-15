@@ -2,6 +2,9 @@
 name = "cia-render"
 version = "1.0.0"
 edition = "2021"
+description = "Local Windows video rendering with smoothie-rs and optional RIFE interpolation."
+repository = "https://github.com/cia213/cia-app"
+license = "MIT"
 
 [lib]
 name = "cia_render_lib"

@@ -15,7 +15,9 @@ use tokio::process::Command;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const CONFIG_SCHEMA_VERSION: u32 = 1;
-const ABOUT_URLS: [&str; 8] = [
+const PROJECT_REPOSITORY_URL: &str = "https://github.com/cia213/cia-app";
+const ABOUT_URLS: [&str; 9] = [
+    PROJECT_REPOSITORY_URL,
     "https://github.com/hzwer/Practical-RIFE",
     "https://github.com/couleur-tweak-tips/smoothie-rs",
     "https://github.com/vapoursynth/vapoursynth",
@@ -1069,7 +1071,7 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
 
     let _ = app.emit(
         "live-log",
-        "[cia app] No complete local RIFE runtime was found. Installing the optional environment…",
+        "[cia app] No complete local RIFE runtime was found. Installing the optional environment...",
     );
     let bootstrap = bundled_resource(&app, "bootstrap/bootstrap-rife.ps1")
         .filter(|path| path.is_file())

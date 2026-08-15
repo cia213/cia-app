@@ -177,6 +177,7 @@
     { name: 'IBM Plex', detail: 'Interface typography', mark: 'plex', url: 'https://github.com/IBM/plex' },
     { name: 'Flowframes', detail: 'Workflow reference', mark: 'flowframes', url: 'https://github.com/n00mkrad/flowframes' }
   ];
+  const PROJECT_REPOSITORY_URL = 'https://github.com/cia213/cia-app';
 
   function loadSmoothieSettings() {
     try {
@@ -310,7 +311,7 @@
     }
     const rifePct = line.match(/^\s*(\d{1,3})%/);
     if (rifePct) progress = parseInt(rifePct[1], 10);
-    const smPct = line.match(/(\d+(?:\.\d+)?)%\s*•/);
+    const smPct = line.match(/(\d+(?:\.\d+)?)%\s*\u2022/);
     if (smPct) progress = Math.round(parseFloat(smPct[1]));
     const rifeTimer = line.match(/\[(\d+(?::\d+)+)<(\d+(?::\d+)+)/);
     if (rifeTimer) { elapsedTime = rifeTimer[1]; remainingTime = rifeTimer[2]; }
@@ -676,8 +677,8 @@
     </div>
     <div class="titlebar-controls">
       <button class="titlebar-btn setup" onclick={() => showRuntimeSetup = true} aria-label="Open runtime repair">RUNTIME</button>
-      <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>─</button>
-      <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>✕</button>
+      <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>-</button>
+      <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>X</button>
     </div>
   </div>
 
@@ -697,7 +698,7 @@
         </header>
 
         {#if !runtimeSnapshot || !setupDraft}
-          <div class="setup-loading">CHECKING LOCAL RUNTIMES…</div>
+          <div class="setup-loading">CHECKING LOCAL RUNTIMES...</div>
         {:else}
           {#if runtimeSnapshot.loadError}
             <div class="setup-alert">{runtimeSnapshot.loadError}</div>
@@ -772,7 +773,7 @@
           {#if isInstallingRifeEnvironment}
             <div class="environment-installing">
               <span class="pro-dot active"></span>
-              <span>PREPARING ENVIRONMENT — SEE COPY LOGS FOR LIVE OUTPUT</span>
+              <span>PREPARING ENVIRONMENT - SEE COPY LOGS FOR LIVE OUTPUT</span>
             </div>
           {:else}
             <div class="environment-actions">
@@ -800,12 +801,12 @@
             <div class="pro-pipeline-box">
               <div class="pipeline-node">
                 <span class="node-label">INPUT</span>
-                <span class="node-val">{videoInfo.width}×{videoInfo.height} @ {videoInfo.fps.toFixed(0)} FPS</span>
+                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {videoInfo.fps.toFixed(0)} FPS</span>
               </div>
-              <div class="pipeline-arrow">➔</div>
+              <div class="pipeline-arrow">-&gt;</div>
               <div class="pipeline-node">
                 <span class="node-label">OUTPUT</span>
-                <span class="node-val">{videoInfo.width}×{videoInfo.height} @ {outputFps.toFixed(0)} FPS ({rifeSettings.factor}x)</span>
+                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {outputFps.toFixed(0)} FPS ({rifeSettings.factor}x)</span>
               </div>
               <div class="pipeline-tags">
                 <span class="chip">H.264 CRF {rifeSettings.crf}</span>
@@ -859,7 +860,7 @@
                 </button>
               {/if}
               <button class="btn-pro-secondary danger-action" onclick={() => showRenderCancelConfirmation = true} disabled={isCancellingRender}>
-                {isCancellingRender ? 'CANCELLING…' : 'CANCEL RENDER'}
+                {isCancellingRender ? 'CANCELLING...' : 'CANCEL RENDER'}
               </button>
             </div>
           </div>
@@ -888,7 +889,7 @@
             <div class="card">
               <h3>VIDEO INFO</h3>
               <div class="info-row"><span>File</span><span class="mono">{videoPath.split(/[\\/]/).pop()}</span></div>
-              <div class="info-row"><span>Resolution</span><span>{videoInfo.width} × {videoInfo.height}</span></div>
+              <div class="info-row"><span>Resolution</span><span>{videoInfo.width} x {videoInfo.height}</span></div>
               <div class="info-row"><span>Source FPS</span><span>{videoInfo.fps.toFixed(2)}</span></div>
               <div class="info-row"><span>Duration</span><span>{videoInfo.duration.toFixed(2)}s</span></div>
               <button class="btn-secondary" onclick={() => { videoPath = ''; videoInfo = null; }}>CHANGE VIDEO</button>
@@ -898,7 +899,7 @@
             <div class="card action-card">
               <div class="card-header">
                 <h3>INTERPOLATION FACTOR</h3>
-                <button class="btn-icon-settings" onclick={() => showRifeSettings = true}>⚙ SETTINGS</button>
+                <button class="btn-icon-settings" onclick={() => showRifeSettings = true}>SETTINGS</button>
               </div>
 
               <!-- Factor Slider 2x to 10x -->
@@ -944,12 +945,12 @@
             <div class="pro-pipeline-box">
               <div class="pipeline-node">
                 <span class="node-label">INPUT</span>
-                <span class="node-val">{smoothieInfo.width}×{smoothieInfo.height} @ {smoothieInfo.fps.toFixed(0)} FPS</span>
+                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieInfo.fps.toFixed(0)} FPS</span>
               </div>
-              <div class="pipeline-arrow">➔</div>
+              <div class="pipeline-arrow">-&gt;</div>
               <div class="pipeline-node">
                 <span class="node-label">OUTPUT</span>
-                <span class="node-val">{smoothieInfo.width}×{smoothieInfo.height} @ {smoothieSettings.fps} FPS</span>
+                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieSettings.fps} FPS</span>
               </div>
               <div class="pipeline-tags">
                 <span class="chip">LUT: {smoothieSettings.lutEnabled === 'yes' ? 'ON' : 'OFF'}</span>
@@ -1012,7 +1013,7 @@
             <div class="card">
               <h3>VIDEO INFO</h3>
               <div class="info-row"><span>File</span><span class="mono">{smoothiePath.split(/[\\/]/).pop()}</span></div>
-              <div class="info-row"><span>Resolution</span><span>{smoothieInfo.width} × {smoothieInfo.height}</span></div>
+              <div class="info-row"><span>Resolution</span><span>{smoothieInfo.width} x {smoothieInfo.height}</span></div>
               <div class="info-row"><span>Source FPS</span><span>{smoothieInfo.fps.toFixed(2)}</span></div>
               <div class="info-row"><span>Duration</span><span>{smoothieInfo.duration.toFixed(2)}s</span></div>
               <button class="btn-secondary" onclick={() => { smoothiePath = ''; smoothieInfo = null; }}>CHANGE VIDEO</button>
@@ -1022,7 +1023,7 @@
             <div class="card action-card">
               <div class="card-header">
                 <h3>OUTPUT TARGET FPS</h3>
-                <button class="btn-icon-settings" onclick={() => showSmoothieSettings = true}>⚙ SETTINGS</button>
+                <button class="btn-icon-settings" onclick={() => showSmoothieSettings = true}>SETTINGS</button>
               </div>
 
               <!-- Output FPS Slider 20 to 60 FPS -->
@@ -1048,10 +1049,15 @@
             <h1>cia app <span>V{appVersion}</span></h1>
             <p>Local render workflow, credits and contact.</p>
           </div>
-          <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia app Discord handle">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
-            <span>{discordCopyFeedback ? 'COPIED' : 'cia2013'}</span>
-          </button>
+          <div class="about-contacts">
+            <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia app Discord handle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
+              <span>{discordCopyFeedback ? 'COPIED' : 'cia2013'}</span>
+            </button>
+            <button class="github-contact" onclick={() => openAboutLink(PROJECT_REPOSITORY_URL)} aria-label="Open cia app on GitHub">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.6.1.8-.3.8-.6v-2.2c-3.4.7-4.1-1.4-4.1-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.8.1-.8 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.3-.1-.3-.5-1.6.1-3.3 0 0 1-.3 3.3 1.2a11.3 11.3 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.7.2 3 .1 3.3.8.9 1.2 2 1.2 3.3 0 4.7-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5Z" /></svg>
+            </button>
+          </div>
         </header>
         <div class="about-grid">
           {#each ABOUT_LINKS as link}
@@ -1061,7 +1067,7 @@
                 <h2>{link.name}</h2>
                 <p>{link.detail}</p>
               </div>
-              <span class="about-link-arrow" aria-hidden="true">↗</span>
+              <span class="about-link-arrow" aria-hidden="true">&gt;</span>
             </button>
           {/each}
         </div>
@@ -1077,7 +1083,7 @@
       <div class="modal-card confirmation-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="cancel-render-title" tabindex="0">
         <div class="modal-header">
           <h2 id="cancel-render-title">CANCEL RENDER?</h2>
-          <button class="btn-close-modal" onclick={() => showRenderCancelConfirmation = false} aria-label="Close">✕</button>
+          <button class="btn-close-modal" onclick={() => showRenderCancelConfirmation = false} aria-label="Close">X</button>
         </div>
         <div class="modal-body confirmation-copy">
           <p>The active render process will stop. Any incomplete file produced by the active phase will be removed.</p>
@@ -1099,7 +1105,7 @@
       <div class="modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
         <div class="modal-header">
           <h2>RIFE SETTINGS</h2>
-          <button class="btn-close-modal" onclick={() => showRifeSettings = false}>✕</button>
+          <button class="btn-close-modal" onclick={() => showRifeSettings = false}>X</button>
         </div>
         <div class="modal-body">
           <div class="setting-group">
@@ -1108,7 +1114,7 @@
               <label for="mod-rife-mode" class="has-tooltip" data-tooltip="Slowmo extends video duration; Boost doubles FPS at normal speed.">MODE</label>
               <select id="mod-rife-mode" bind:value={rifeSettings.mode}>
                 <option value="boost">FPS Boost (same duration)</option>
-                <option value="slowmo">Slowmo (duration × factor)</option>
+                <option value="slowmo">Slowmo (duration x factor)</option>
               </select>
             </div>
             <div class="setting-row">
@@ -1156,7 +1162,7 @@
       <div class="modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
         <div class="modal-header">
           <h2>RENDER CONFIGURATION</h2>
-          <button class="btn-close-modal" onclick={() => showSmoothieSettings = false}>✕</button>
+          <button class="btn-close-modal" onclick={() => showSmoothieSettings = false}>X</button>
         </div>
         <div class="modal-body">
           <div class="setting-group">
@@ -1630,11 +1636,18 @@
     line-height: 1.35;
   }
 
-  .discord-contact {
+  .about-contacts {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .discord-contact,
+  .github-contact {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    margin-left: auto;
+    margin-left: 0;
     padding: 8px 10px;
     border: 1px solid #27272a;
     border-radius: 5px;
@@ -1647,17 +1660,25 @@
     letter-spacing: 0.03em;
     transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
   }
-  .discord-contact svg {
+  .discord-contact svg,
+  .github-contact svg {
     width: 17px;
     height: 17px;
     fill: currentColor;
   }
   .discord-contact:hover,
-  .discord-contact:focus-visible {
+  .discord-contact:focus-visible,
+  .github-contact:hover,
+  .github-contact:focus-visible {
     border-color: rgba(255, 255, 255, 0.42);
     background: #16161a;
     color: #fff;
     outline: none;
+  }
+  .github-contact {
+    justify-content: center;
+    width: 37px;
+    padding-inline: 0;
   }
 
   .about-link-card {
@@ -1714,7 +1735,7 @@
     .about-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .page-stage { justify-content: flex-start; overflow-y: auto; }
     .about-identity { align-items: flex-start; }
-    .discord-contact { align-self: center; }
+    .about-contacts { align-self: center; }
   }
 
   /* Drop Zone */

@@ -1,4 +1,4 @@
-# cia app V1 — runtime and distribution notes
+# cia app V1 - runtime and distribution notes
 
 ## What the NSIS installer contains
 
