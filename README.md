@@ -45,6 +45,9 @@ process. The UI never reconstructs a filename.
 | Auto-chain RIFE 360 → Smoothie 30 | `clip-360fps_render30fps.mp4` |
 
 Existing destinations are never overwritten silently.
+When an output already exists, CIA RENDER preserves it and selects the first
+available numbered variant instead: `clip_render30fps (1).mp4`, then `(2)`,
+and so on. The output name is reserved by Rust before the render starts.
 
 ## Build from source
 

@@ -5,6 +5,7 @@
   import { onMount } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
+  import appLogo from '../src-tauri/icons/cia-render.svg';
 
   const appWindow =
     typeof window !== 'undefined' && window.__TAURI_INTERNALS__
@@ -24,7 +25,9 @@
   let setupDraft = $state(null);
   let showRuntimeSetup = $state(false);
   let isInstallingRifeEnvironment = $state(false);
-  let showRifeInstallConfirmation = $state(false);
+  let appVersion = $state('1.0.0');
+  let discordCopyFeedback = $state(false);
+  let shouldShowExecutionLogs = $state(false);
 
   // Drawers / Modal Overlays
   let showRifeSettings = $state(false);
@@ -87,6 +90,7 @@
   async function initializeRuntime() {
     try {
       const snapshot = await refreshRuntimeSnapshot();
+      appVersion = await invoke('get_app_version');
       if (snapshot.config.ui?.migrated) {
         autoRender = Boolean(snapshot.config.ui.autoRender);
         if (hasStoredSettings(snapshot.config.ui.rifeSettings)) {
@@ -196,6 +200,7 @@
 
   let anyProcessing = $derived(isProcessing || isSmoothieProcessing);
   let canRenderSmoothie = $derived(Boolean(rifeOutputPath) && lastOutputPath === rifeOutputPath && !anyProcessing);
+  let canCopyLogs = $derived(Boolean(logs.length && shouldShowExecutionLogs));
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
   let smoothieSliderPct = $derived(((smoothieSettings.fps - 20) / (60 - 20)) * 100);
 
@@ -243,7 +248,13 @@
 
   function resetRunState() {
     logs = [];
+    shouldShowExecutionLogs = false;
     resetTelemetry();
+  }
+
+  function beginLogCapture() {
+    resetRunState();
+    shouldShowExecutionLogs = true;
   }
 
   function createRenderJobId() {
@@ -322,6 +333,21 @@
     }
   }
 
+  async function copyDiscordHandle() {
+    try {
+      await navigator.clipboard.writeText('cia2013');
+      discordCopyFeedback = true;
+      showToast('Discord handle copied', 'success');
+      setTimeout(() => { discordCopyFeedback = false; }, 2000);
+    } catch (e) {
+      showToast('Unable to copy the Discord handle', 'error');
+    }
+  }
+
+  function navigateTo(page) {
+    if (activePage !== page) activePage = page;
+  }
+
   $effect(() => {
     const u1 = listen('tauri://drag-drop', async (event) => {
       isDragging = false;
@@ -375,7 +401,7 @@
     activeRenderJobId = createRenderJobId();
     isRenderPaused = false;
     isCancellingRender = false;
-    resetRunState();
+    beginLogCapture();
     appendLog('[CIA RENDER] RIFE 4.26 started');
     try {
       const outputPath = await invoke('run_time_remap', {
@@ -521,7 +547,7 @@
   }
 
   async function runSmoothieFor(inputPath, { preserveLogs = false, jobId = createRenderJobId() } = {}) {
-    if (!preserveLogs) resetRunState();
+    if (!preserveLogs) beginLogCapture();
     else resetTelemetry();
     appendLog('[CIA RENDER] SMOOTHIE started');
     return invoke('run_smoothie', {
@@ -578,14 +604,13 @@
 
   async function installRifeEnvironment() {
     if (isInstallingRifeEnvironment) return;
-    showRifeInstallConfirmation = false;
     isInstallingRifeEnvironment = true;
-    resetRunState();
-    appendLog('[CIA RENDER] Optional RIFE environment installation started');
+    beginLogCapture();
+    appendLog('[CIA RENDER] Checking for an available RIFE environment');
     try {
       runtimeSnapshot = await invoke('install_rife_environment');
       setupDraft = cloneConfig(runtimeSnapshot.config);
-      showToast('RIFE environment installed and ready', 'success');
+      showToast('RIFE environment ready', 'success');
     } catch (e) {
       showToast(`RIFE environment installation failed: ${e}`, 'error');
     } finally {
@@ -657,9 +682,9 @@
   </div>
 
   <nav class="tab-bar">
-    <button class:active={activePage === 'smoothie'} onclick={() => activePage = 'smoothie'}>RENDER</button>
-    <button class:active={activePage === 'dashboard'} onclick={() => activePage = 'dashboard'}>INTERPOLATION</button>
-    <button class:active={activePage === 'about'} onclick={() => activePage = 'about'}>ABOUT</button>
+    <button class:active={activePage === 'smoothie'} onclick={() => navigateTo('smoothie')}>RENDER</button>
+    <button class:active={activePage === 'dashboard'} onclick={() => navigateTo('dashboard')}>INTERPOLATION</button>
+    <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
 
   {#if showRuntimeSetup}
@@ -732,6 +757,8 @@
   {:else}
   <!-- Main Content Area -->
   <main class="content-area">
+    {#key activePage}
+      <div class="page-stage">
     <!-- INTERPOLATION PAGE (RIFE) -->
     {#if activePage === 'dashboard'}
       {#if !runtimeSnapshot?.rifeReady}
@@ -745,12 +772,11 @@
           {#if isInstallingRifeEnvironment}
             <div class="environment-installing">
               <span class="pro-dot active"></span>
-              <span>INSTALLING ENVIRONMENT — SEE COPY LOGS FOR LIVE OUTPUT</span>
+              <span>PREPARING ENVIRONMENT — SEE COPY LOGS FOR LIVE OUTPUT</span>
             </div>
           {:else}
             <div class="environment-actions">
-              <button class="btn-primary" onclick={() => showRifeInstallConfirmation = true}>INSTALL ENVIRONMENT</button>
-              <button class="btn-pro-secondary" onclick={() => showRuntimeSetup = true}>USE EXISTING RUNTIME</button>
+              <button class="btn-primary" onclick={installRifeEnvironment}>INSTALL ENVIRONMENT</button>
             </div>
           {/if}
         </section>
@@ -1016,6 +1042,18 @@
       {/if}
     {:else if activePage === 'about'}
       <section class="about-page" aria-label="Project credits">
+        <header class="about-identity">
+          <img class="about-app-logo" src={appLogo} alt="CIA RENDER logo" />
+          <div class="about-app-copy">
+            <span class="about-kicker">CIA RENDER / ABOUT</span>
+            <h1>CIA RENDER <span>V{appVersion}</span></h1>
+            <p>Local render workflow, credits and contact.</p>
+          </div>
+          <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy CIA RENDER Discord handle">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
+            <span>{discordCopyFeedback ? 'COPIED' : 'cia2013'}</span>
+          </button>
+        </header>
         <div class="about-grid">
           {#each ABOUT_LINKS as link}
             <button class="about-link-card" onclick={() => openAboutLink(link.url)} aria-label={`Open ${link.name} website`}>
@@ -1030,26 +1068,9 @@
         </div>
       </section>
     {/if}
-  </main>
-  {/if}
-
-  {#if showRifeInstallConfirmation}
-    <div class="modal-backdrop" onclick={() => showRifeInstallConfirmation = false} role="presentation">
-      <div class="modal-card confirmation-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="install-rife-title" tabindex="0">
-        <div class="modal-header">
-          <h2 id="install-rife-title">INSTALL RIFE ENVIRONMENT</h2>
-          <button class="btn-close-modal" onclick={() => showRifeInstallConfirmation = false} aria-label="Close">✕</button>
-        </div>
-        <div class="modal-body confirmation-copy">
-          <p>This downloads the optional Python, CUDA PyTorch and RIFE 4.26 runtime into CIA RENDER’s app-data folder. It can take several minutes and requires an NVIDIA CUDA-capable GPU.</p>
-          <p>RENDER remains available without it.</p>
-        </div>
-        <div class="modal-footer">
-          <button class="btn-secondary" onclick={() => showRifeInstallConfirmation = false}>NOT NOW</button>
-          <button class="btn-primary-modal" onclick={installRifeEnvironment}>INSTALL ENVIRONMENT</button>
-        </div>
       </div>
-    </div>
+    {/key}
+  </main>
   {/if}
 
   {#if showRenderCancelConfirmation}
@@ -1196,12 +1217,13 @@
     </div>
   {/if}
 
-  <!-- Footer -->
-  <footer class="app-footer">
-    <button class="btn-copy" onclick={copyLogsToClipboard}>
-      {copyFeedback ? 'COPIED TO CLIPBOARD' : 'COPY LOGS'}
-    </button>
-  </footer>
+  {#if canCopyLogs}
+    <footer class="app-footer">
+      <button class="btn-copy" onclick={copyLogsToClipboard}>
+        {copyFeedback ? 'COPIED TO CLIPBOARD' : 'COPY LOGS'}
+      </button>
+    </footer>
+  {/if}
 
   <!-- Toast Notification Overlay -->
   {#if toast.show}
@@ -1286,39 +1308,67 @@
     padding: 8px 12px 0;
     background: #08080a;
     border-bottom: 1px solid #1c1c20;
+    min-height: 40px;
   }
 
   .tab-bar button {
+    position: relative;
+    z-index: 0;
+    min-height: 32px;
     padding: 8px 20px;
     background: #0d0d10;
     border: 1px solid #1c1c20;
-    border-bottom: none;
+    border-bottom-color: #1c1c20;
     border-radius: 6px 6px 0 0;
     color: #71717a;
     cursor: pointer;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.05em;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
   }
 
   .tab-bar button:hover { color: #e4e4e7; background: #16161a; }
   .tab-bar button.active {
+    z-index: 1;
     color: #ffffff;
     background: #121215;
     border-color: rgba(255, 255, 255, 0.25);
     border-bottom: 1px solid #121215;
   }
+  .tab-bar button:focus-visible {
+    z-index: 2;
+    outline: none;
+    box-shadow: inset 0 0 0 1px #ffffff;
+  }
 
   /* Main Content Area */
   .content-area {
     flex: 1;
-    overflow-y: auto;
+    min-height: 0;
+    overflow: hidden;
     padding: 16px;
     background: #050507;
     display: flex;
     flex-direction: column;
+  }
+
+  .page-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
     justify-content: center;
+    animation: page-enter 190ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes page-enter {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .page-stage { animation: none; }
   }
 
   .runtime-setup {
@@ -1541,6 +1591,76 @@
     gap: 14px;
   }
 
+  .about-identity {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 88px;
+    padding: 14px 16px;
+    background: #09090c;
+    border: 1px solid #1c1c20;
+    border-radius: 8px;
+  }
+
+  .about-app-logo {
+    width: 52px;
+    height: 52px;
+    flex: 0 0 auto;
+    border-radius: 12px;
+  }
+
+  .about-app-copy { min-width: 0; }
+  .about-app-copy h1 {
+    margin: 4px 0;
+    color: #fff;
+    font-size: 17px;
+    letter-spacing: 0.04em;
+  }
+  .about-app-copy h1 span {
+    margin-left: 6px;
+    color: #71717a;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+  }
+  .about-app-copy p {
+    color: #a1a1aa;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .discord-contact {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-left: auto;
+    padding: 8px 10px;
+    border: 1px solid #27272a;
+    border-radius: 5px;
+    background: #0d0d10;
+    color: #d4d4d8;
+    cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  }
+  .discord-contact svg {
+    width: 17px;
+    height: 17px;
+    fill: currentColor;
+  }
+  .discord-contact:hover,
+  .discord-contact:focus-visible {
+    border-color: rgba(255, 255, 255, 0.42);
+    background: #16161a;
+    color: #fff;
+    outline: none;
+  }
+
   .about-link-card {
     background: #09090c;
     border: 1px solid #1c1c20;
@@ -1593,7 +1713,9 @@
 
   @media (max-width: 760px) {
     .about-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .content-area { justify-content: flex-start; }
+    .page-stage { justify-content: flex-start; overflow-y: auto; }
+    .about-identity { align-items: flex-start; }
+    .discord-contact { align-self: center; }
   }
 
   /* Drop Zone */

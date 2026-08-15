@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -140,6 +141,17 @@ struct SmoothieRuntimePaths {
     root: PathBuf,
     executable: PathBuf,
     ffmpeg_directory: PathBuf,
+}
+
+struct OutputReservation {
+    output: PathBuf,
+    lock: PathBuf,
+}
+
+impl Drop for OutputReservation {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.lock);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -921,19 +933,61 @@ fn ensure_nonempty_file(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_destination_available(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        return Err(format!(
-            "Refusing to overwrite an existing output: {}",
-            path.display()
-        ));
+fn reserve_output_path(preferred: &Path) -> Result<OutputReservation, String> {
+    let parent = preferred.parent().unwrap_or_else(|| Path::new(""));
+    let stem = preferred
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or("Unable to reserve the output filename")?;
+    let extension = preferred.extension().and_then(|value| value.to_str());
+
+    for index in 0..10_000u32 {
+        let filename = match (index, extension) {
+            (0, Some(extension)) => format!("{stem}.{extension}"),
+            (0, None) => stem.to_string(),
+            (_, Some(extension)) => format!("{stem} ({index}).{extension}"),
+            (_, None) => format!("{stem} ({index})"),
+        };
+        let output = parent.join(filename);
+        let lock_name = format!(
+            ".{}.cia-render.lock",
+            output
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or("Unable to reserve the output filename")?
+        );
+        let lock = parent.join(lock_name);
+
+        match OpenOptions::new().write(true).create_new(true).open(&lock) {
+            Ok(_) => {
+                if output.exists() {
+                    let _ = fs::remove_file(&lock);
+                    continue;
+                }
+                return Ok(OutputReservation { output, lock });
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Unable to reserve an output name in {}: {error}",
+                    parent.display()
+                ))
+            }
+        }
     }
-    Ok(())
+
+    Err("Unable to find a free output name after 9,999 existing files".to_string())
 }
 
 #[tauri::command]
 fn get_runtime_snapshot(app: tauri::AppHandle) -> RuntimeSnapshot {
     runtime_snapshot(&app)
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
 }
 
 #[tauri::command]
@@ -991,6 +1045,32 @@ async fn analyze_video(app: tauri::AppHandle, video_path: String) -> Result<Vide
 
 #[tauri::command]
 async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapshot, String> {
+    let configured = normalize_config(load_config(&app).unwrap_or_default());
+    if rife_runtime(&configured, &app).is_ok() {
+        let _ = app.emit(
+            "live-log",
+            "[CIA RENDER] A configured RIFE environment is already ready.",
+        );
+        return Ok(runtime_snapshot(&app));
+    }
+
+    let detected = auto_detect_config();
+    let mut adopted = configured.clone();
+    adopted.rife = detected.rife;
+    let adopted = normalize_config(adopted);
+    if rife_runtime(&adopted, &app).is_ok() {
+        write_config(&app, &adopted)?;
+        let _ = app.emit(
+            "live-log",
+            "[CIA RENDER] A complete local RIFE runtime was detected and is now in use.",
+        );
+        return Ok(runtime_snapshot(&app));
+    }
+
+    let _ = app.emit(
+        "live-log",
+        "[CIA RENDER] No complete local RIFE runtime was found. Installing the optional environment…",
+    );
     let bootstrap = bundled_resource(&app, "bootstrap/bootstrap-rife.ps1")
         .filter(|path| path.is_file())
         .ok_or("The bundled RIFE installer script is missing. Reinstall CIA RENDER.")?;
@@ -1125,8 +1205,8 @@ async fn run_time_remap(
     let config = load_config(&app)?;
     let runtime = rife_runtime(&config, &app)?;
     let info = probe_video(&video_path, &runtime.media.ffprobe).await?;
-    let out_path = rife_output_path(&video_path, &mode, factor, info.fps)?;
-    ensure_destination_available(&out_path)?;
+    let reservation = reserve_output_path(&rife_output_path(&video_path, &mode, factor, info.fps)?)?;
+    let out_path = reservation.output.clone();
 
     let mut command = Command::new(&runtime.python);
     command
@@ -1204,8 +1284,8 @@ async fn run_smoothie(
 ) -> Result<String, String> {
     let config = load_config(&app)?;
     let runtime = smoothie_runtime(&config, &app)?;
-    let out_path = smoothie_output_path(&video_path, output_fps)?;
-    ensure_destination_available(&out_path)?;
+    let reservation = reserve_output_path(&smoothie_output_path(&video_path, output_fps)?)?;
+    let out_path = reservation.output.clone();
     let out_path_text = out_path.to_string_lossy().to_string();
 
     let mut command = Command::new(&runtime.executable);
@@ -1336,6 +1416,7 @@ pub fn run() {
         .manage(JobRegistry::default())
         .invoke_handler(tauri::generate_handler![
             get_runtime_snapshot,
+            get_app_version,
             save_runtime_config,
             save_ui_preferences,
             pick_runtime_path,
@@ -1357,7 +1438,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{rife_output_path, smoothie_output_path};
+    use super::{reserve_output_path, rife_output_path, smoothie_output_path};
 
     #[test]
     fn interpolation_name_uses_only_the_actual_output_fps() {
@@ -1375,6 +1456,34 @@ mod tests {
             output,
             std::path::PathBuf::from(r"C:\media\clip-360fps_render30fps.mp4")
         );
+    }
+
+    #[test]
+    fn an_existing_output_gets_a_numbered_name_without_leaving_a_lock() {
+        let directory = std::env::temp_dir().join(format!(
+            "cia-render-output-reservation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let preferred = directory.join("cutshirlery_render30fps.mp4");
+        let first_numbered = directory.join("cutshirlery_render30fps (1).mp4");
+        std::fs::write(&preferred, b"already rendered").unwrap();
+        std::fs::write(&first_numbered, b"already rendered again").unwrap();
+
+        let reservation = reserve_output_path(&preferred).unwrap();
+        assert_eq!(
+            reservation.output,
+            directory.join("cutshirlery_render30fps (2).mp4")
+        );
+        assert!(reservation.lock.is_file());
+        let lock = reservation.lock.clone();
+        drop(reservation);
+        assert!(!lock.exists());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(target_os = "windows")]
