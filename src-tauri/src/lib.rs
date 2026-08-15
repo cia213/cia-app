@@ -820,6 +820,27 @@ where
                 };
                 pending.drain(..consumed);
                 for line in lines {
+                    if let Some(progress) = line.strip_prefix("CIA_PROGRESS ") {
+                        let mut step = 0u32;
+                        let mut total = 0u32;
+                        let mut label = String::new();
+                        for part in progress.split_whitespace() {
+                            if let Some(v) = part.strip_prefix("step=") {
+                                step = v.parse().unwrap_or(0);
+                            } else if let Some(v) = part.strip_prefix("total=") {
+                                total = v.parse().unwrap_or(0);
+                            } else if let Some(v) = part.strip_prefix("label=") {
+                                label = v.replace('_', " ");
+                            } else if !label.is_empty() {
+                                label.push(' ');
+                                label.push_str(part);
+                            }
+                        }
+                        let _ = app.emit(
+                            "install-progress",
+                            json!({ "step": step, "total": total, "label": label }),
+                        );
+                    }
                     let _ = app.emit("live-log", &line);
                 }
             }

@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 # --- Fail fast: require an NVIDIA GPU before any download ---
+Write-Output 'CIA_PROGRESS step=1 total=7 label=Checking NVIDIA GPU'
 $NvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if (-not $NvidiaSmi) {
   throw 'ERROR: nvidia-smi not found. RIFE requires an NVIDIA GPU with CUDA support. Install aborted before any download.'
@@ -43,6 +44,7 @@ if (-not (Test-Path -LiteralPath $PythonInstaller -PathType Leaf)) {
   throw "The bundled Python installer is missing: $PythonInstaller"
 }
 
+Write-Output 'CIA_PROGRESS step=2 total=7 label=Installing Python 3.11'
 $BasePython = Join-Path $PythonHome 'python.exe'
 if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) {
   Write-Step 'Installing the bundled Python 3.11 runtime...'
@@ -53,6 +55,7 @@ if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) {
   throw "Python installation completed without creating $BasePython"
 }
 
+Write-Output 'CIA_PROGRESS step=3 total=7 label=Creating virtual environment'
 $VenvPython = Join-Path $VenvRoot 'Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
   Write-Step 'Creating the isolated RIFE environment...'
@@ -60,16 +63,19 @@ if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
   Assert-ExitCode 'Virtual environment creation'
 }
 
+Write-Output 'CIA_PROGRESS step=4 total=7 label=Installing RIFE dependencies'
 Write-Step 'Installing RIFE dependencies (this is the largest download)...'
 & $VenvPython -m pip install --disable-pip-version-check --upgrade pip
 Assert-ExitCode 'pip upgrade'
 & $VenvPython -m pip install --disable-pip-version-check `
   'numpy==1.23.5' 'tqdm==4.67.1' 'sk-video==1.1.10' 'opencv-python==4.10.0.84' 'moviepy==1.0.3'
 Assert-ExitCode 'RIFE support dependencies'
+Write-Output 'CIA_PROGRESS step=5 total=7 label=Installing CUDA PyTorch'
 & $VenvPython -m pip install --disable-pip-version-check `
   'torch==2.5.1' 'torchvision==0.20.1' --index-url 'https://download.pytorch.org/whl/cu121'
 Assert-ExitCode 'CUDA PyTorch dependencies'
 
+Write-Output 'CIA_PROGRESS step=6 total=7 label=Downloading Practical-RIFE'
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'inference_video.py') -PathType Leaf)) {
   Write-Step 'Downloading Practical-RIFE...'
   $ProjectZip = Join-Path $Staging 'practical-rife.zip'
@@ -90,6 +96,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'inference_video.py') -
   Move-Item -LiteralPath $ProjectSource.FullName -Destination $ProjectRoot
 }
 
+Write-Output 'CIA_PROGRESS step=7 total=7 label=Downloading RIFE 4.26 model'
 if (-not (Test-Path -LiteralPath $ModelTarget -PathType Leaf)) {
   Write-Step 'Downloading the official RIFE 4.26 model...'
   $ModelDownload = Join-Path $Staging 'rife-4.26-model.download'

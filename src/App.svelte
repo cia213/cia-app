@@ -25,6 +25,9 @@
   let setupDraft = $state(null);
   let showRuntimeSetup = $state(false);
   let isInstallingRifeEnvironment = $state(false);
+  let installStep = $state(0);
+  let installTotal = $state(0);
+  let installLabel = $state('');
   let appVersion = $state('1.0.0');
   let discordCopyFeedback = $state(false);
   let shouldShowExecutionLogs = $state(false);
@@ -361,7 +364,13 @@
     const u2 = listen('tauri://drag-enter', () => { isDragging = true; });
     const u3 = listen('tauri://drag-leave', () => { isDragging = false; });
     const u4 = listen('live-log', (event) => { parseLogLine(event.payload); });
-    return () => { u1.then(f => f()); u2.then(f => f()); u3.then(f => f()); u4.then(f => f()); };
+    const u5 = listen('install-progress', (event) => {
+      const { step, total, label } = event.payload;
+      installStep = step;
+      installTotal = total;
+      installLabel = label;
+    });
+    return () => { u1.then(f => f()); u2.then(f => f()); u3.then(f => f()); u4.then(f => f()); u5.then(f => f()); };
   });
 
   // --- RIFE Handlers ---
@@ -606,6 +615,9 @@
   async function installRifeEnvironment() {
     if (isInstallingRifeEnvironment) return;
     isInstallingRifeEnvironment = true;
+    installStep = 0;
+    installTotal = 0;
+    installLabel = '';
     beginLogCapture();
     appendLog('[cia app] Checking for an available RIFE environment');
     try {
@@ -616,6 +628,9 @@
       showToast(`RIFE environment installation failed: ${e}`, 'error');
     } finally {
       isInstallingRifeEnvironment = false;
+      installStep = 0;
+      installTotal = 0;
+      installLabel = '';
     }
   }
 
@@ -772,8 +787,17 @@
           </div>
           {#if isInstallingRifeEnvironment}
             <div class="environment-installing">
-              <span class="pro-dot active"></span>
-              <span>PREPARING ENVIRONMENT - SEE COPY LOGS FOR LIVE OUTPUT</span>
+              <div class="install-progress-header">
+                <span class="pro-dot active"></span>
+                <span>STEP {installStep} / {installTotal}</span>
+              </div>
+              <div class="install-progress-label">{installLabel || 'PREPARING ENVIRONMENT'}</div>
+              <div class="pro-progress-row">
+                <div class="pro-track">
+                  <div class="pro-fill" style="width: {installTotal > 0 ? (installStep / installTotal) * 100 : 0}%"></div>
+                </div>
+                <span class="pro-percent-readout">{installStep}/{installTotal}</span>
+              </div>
             </div>
           {:else}
             <div class="environment-actions">
@@ -1576,10 +1600,25 @@
   }
 
   .environment-installing {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
     color: #e4e4e7;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     letter-spacing: 0.04em;
+  }
+
+  .install-progress-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .install-progress-label {
+    font-size: 11px;
+    color: #a1a1aa;
+    letter-spacing: 0.06em;
   }
 
   @media (max-width: 720px) {
