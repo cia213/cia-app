@@ -6,7 +6,10 @@
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
 
-  const appWindow = getCurrentWindow();
+  const appWindow =
+    typeof window !== 'undefined' && window.__TAURI_INTERNALS__
+      ? getCurrentWindow()
+      : null;
 
   let activePage = $state('dashboard'); // 'dashboard' | 'smoothie' | 'about'
   let isDragging = $state(false);
@@ -563,8 +566,8 @@
     </div>
     <div class="titlebar-controls">
       <button class="titlebar-btn setup" onclick={() => showRuntimeSetup = true} aria-label="Open runtime setup">SETUP</button>
-      <button class="titlebar-btn" onclick={() => appWindow.minimize()} aria-label="Minimize">─</button>
-      <button class="titlebar-btn close" onclick={() => appWindow.close()} aria-label="Close">✕</button>
+      <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>─</button>
+      <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>✕</button>
     </div>
   </div>
 
@@ -1414,12 +1417,6 @@
     color: #e4e4e7;
   }
 
-  .drop-zone span {
-    color: #71717a;
-    font-size: 11px;
-    letter-spacing: 0.05em;
-  }
-
   .loading-state {
     display: flex;
     align-items: center;
@@ -1661,89 +1658,6 @@
     background: #1c1c20;
   }
 
-  /* Process Panel */
-  .process-panel {
-    margin-top: 16px;
-    background: #09090c;
-    border: 1px solid #1c1c20;
-    border-radius: 8px;
-    padding: 14px;
-  }
-
-  .progress-wrap {
-    height: 6px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    overflow: hidden;
-    margin-bottom: 12px;
-  }
-
-  .progress-bar {
-    height: 100%;
-    background: rgba(255, 255, 255, 0.85);
-    border-radius: 6px;
-    transition: width 0.15s linear;
-  }
-
-  .status-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .status-text {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #e4e4e7;
-  }
-
-  .timer-box {
-    background: #050507;
-    border: 1px solid #27272a;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    color: #ffffff;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .timer-box:hover { border-color: rgba(255, 255, 255, 0.4); }
-
-  .complete-banner {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: #e4e4e7;
-  }
-
-  .action-buttons { display: flex; gap: 8px; }
-
-  .btn-action {
-    background: #18181b;
-    color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .btn-action:hover {
-    background: #242429;
-    border-color: rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 12px rgba(255, 255, 255, 0.08);
-  }
-
   /* Professional Render Card (Industrial Telemetry Layout) */
   .pro-render-card {
     background: #09090c;
@@ -1777,7 +1691,6 @@
     background: #71717a;
   }
   .pro-dot.active { background: #ffffff; box-shadow: 0 0 6px rgba(255, 255, 255, 0.4); }
-  .pro-dot.complete { background: #ffffff; box-shadow: 0 0 6px rgba(255, 255, 255, 0.4); }
 
   .pro-filename {
     font-family: 'IBM Plex Mono', monospace;
@@ -1993,19 +1906,6 @@
     min-height: 380px;
   }
 
-  .complete-header-bar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .complete-title {
-    font-size: 13px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    color: #ffffff;
-  }
-
   .pro-output-box {
     display: flex;
     flex-direction: column;
@@ -2080,24 +1980,6 @@
   .btn-pro-secondary:hover {
     background: #1c1c20;
     border-color: rgba(255, 255, 255, 0.4);
-  }
-
-  .btn-pro-ghost {
-    background: transparent;
-    color: #71717a;
-    border: 1px solid #27272a;
-    border-radius: 4px;
-    padding: 9px 18px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-
-  .btn-pro-ghost:hover {
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 0.3);
   }
 
   /* Modal Settings Overlay Drawer */

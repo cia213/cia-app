@@ -154,8 +154,8 @@ fn load_config(app: &tauri::AppHandle) -> Result<RuntimeConfig, String> {
 
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
-    let config: RuntimeConfig = serde_json::from_str(&raw)
-        .map_err(|error| format!("Invalid config.json: {error}"))?;
+    let config: RuntimeConfig =
+        serde_json::from_str(&raw).map_err(|error| format!("Invalid config.json: {error}"))?;
     if config.schema_version != CONFIG_SCHEMA_VERSION {
         return Err(format!(
             "Unsupported config schema {} (expected {})",
@@ -177,7 +177,11 @@ fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), Stri
 
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
     let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(once(0)).collect();
-    let destination_wide: Vec<u16> = destination.as_os_str().encode_wide().chain(once(0)).collect();
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect();
     let moved = unsafe {
         MoveFileExW(
             source_wide.as_ptr(),
@@ -362,15 +366,55 @@ fn snapshot_from_config(
     let smoothie_recipe = existing_file(&config.smoothie.recipe);
 
     let components = vec![
-        component_status("rife_python", "Python runtime", python.clone(), "Python 3.11+ executable"),
-        component_status("rife_script", "CIA RENDER RIFE script", script.clone(), "Bundled script or explicit time_remap.py"),
-        component_status("rife_directory", "Practical-RIFE", rife_directory.clone(), "Folder containing inference_video.py"),
+        component_status(
+            "rife_python",
+            "Python runtime",
+            python.clone(),
+            "Python 3.11+ executable",
+        ),
+        component_status(
+            "rife_script",
+            "CIA RENDER RIFE script",
+            script.clone(),
+            "Bundled script or explicit time_remap.py",
+        ),
+        component_status(
+            "rife_directory",
+            "Practical-RIFE",
+            rife_directory.clone(),
+            "Folder containing inference_video.py",
+        ),
         component_status("rife_model", "RIFE model", model.clone(), "flownet.pkl"),
-        component_status("ffmpeg", "FFmpeg", ffmpeg.clone(), "Explicit ffmpeg executable"),
-        component_status("ffprobe", "FFprobe", ffprobe.clone(), "Explicit ffprobe executable"),
-        component_status("smoothie_root", "Smoothie root", smoothie_root.clone(), "smoothie-rs runtime folder"),
-        component_status("smoothie_executable", "smoothie-rs", smoothie_executable.clone(), "smoothie-rs executable"),
-        component_status("smoothie_recipe", "Smoothie recipe", smoothie_recipe, "recipe.ini"),
+        component_status(
+            "ffmpeg",
+            "FFmpeg",
+            ffmpeg.clone(),
+            "Explicit ffmpeg executable",
+        ),
+        component_status(
+            "ffprobe",
+            "FFprobe",
+            ffprobe.clone(),
+            "Explicit ffprobe executable",
+        ),
+        component_status(
+            "smoothie_root",
+            "Smoothie root",
+            smoothie_root.clone(),
+            "smoothie-rs runtime folder",
+        ),
+        component_status(
+            "smoothie_executable",
+            "smoothie-rs",
+            smoothie_executable.clone(),
+            "smoothie-rs executable",
+        ),
+        component_status(
+            "smoothie_recipe",
+            "Smoothie recipe",
+            smoothie_recipe,
+            "recipe.ini",
+        ),
     ];
 
     RuntimeSnapshot {
@@ -402,7 +446,8 @@ fn required_file(value: &Option<String>, label: &str) -> Result<PathBuf, String>
 }
 
 fn required_directory(value: &Option<String>, label: &str) -> Result<PathBuf, String> {
-    existing_directory(value).ok_or_else(|| format!("{label} is not configured. Open Runtime Setup."))
+    existing_directory(value)
+        .ok_or_else(|| format!("{label} is not configured. Open Runtime Setup."))
 }
 
 fn media_tools(config: &RuntimeConfig) -> Result<MediaToolPaths, String> {
@@ -412,7 +457,10 @@ fn media_tools(config: &RuntimeConfig) -> Result<MediaToolPaths, String> {
     })
 }
 
-fn rife_runtime(config: &RuntimeConfig, app: &tauri::AppHandle) -> Result<RifeRuntimePaths, String> {
+fn rife_runtime(
+    config: &RuntimeConfig,
+    app: &tauri::AppHandle,
+) -> Result<RifeRuntimePaths, String> {
     let directory = required_directory(&config.rife.directory, "Practical-RIFE")?;
     if !directory.join("inference_video.py").is_file() {
         return Err("Practical-RIFE does not contain inference_video.py".to_string());
@@ -524,20 +572,35 @@ async fn probe_video(video_path: &str, ffprobe: &Path) -> Result<VideoInfo, Stri
     let fps = if let Some((numerator, denominator)) = fps_string.split_once('/') {
         let numerator: f64 = numerator.parse().unwrap_or(30.0);
         let denominator: f64 = denominator.parse().unwrap_or(1.0);
-        if denominator > 0.0 { numerator / denominator } else { 30.0 }
+        if denominator > 0.0 {
+            numerator / denominator
+        } else {
+            30.0
+        }
     } else {
         30.0
     };
     let duration = json["format"]["duration"]
         .as_str()
         .and_then(|value| value.parse().ok())
-        .or_else(|| stream["duration"].as_str().and_then(|value| value.parse().ok()))
+        .or_else(|| {
+            stream["duration"]
+                .as_str()
+                .and_then(|value| value.parse().ok())
+        })
         .unwrap_or(0.0);
 
     let mut audio_command = Command::new(ffprobe);
     audio_command
         .args([
-            "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
         ])
         .arg(video_path);
     #[cfg(target_os = "windows")]
@@ -548,10 +611,21 @@ async fn probe_video(video_path: &str, ffprobe: &Path) -> Result<VideoInfo, Stri
         .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
         .unwrap_or(false);
 
-    Ok(VideoInfo { width, height, fps, duration, has_audio })
+    Ok(VideoInfo {
+        width,
+        height,
+        fps,
+        duration,
+        has_audio,
+    })
 }
 
-fn rife_output_path(video_path: &str, mode: &str, factor: f64, input_fps: f64) -> Result<PathBuf, String> {
+fn rife_output_path(
+    video_path: &str,
+    mode: &str,
+    factor: f64,
+    input_fps: f64,
+) -> Result<PathBuf, String> {
     if !factor.is_finite() || factor <= 0.0 {
         return Err("Interpolation factor must be greater than zero".to_string());
     }
@@ -612,7 +686,10 @@ fn get_runtime_snapshot(app: tauri::AppHandle) -> RuntimeSnapshot {
 }
 
 #[tauri::command]
-fn save_runtime_config(app: tauri::AppHandle, config: RuntimeConfig) -> Result<RuntimeSnapshot, String> {
+fn save_runtime_config(
+    app: tauri::AppHandle,
+    config: RuntimeConfig,
+) -> Result<RuntimeSnapshot, String> {
     let config = normalize_config(config);
     write_config(&app, &config)?;
     Ok(runtime_snapshot(&app))
@@ -640,9 +717,13 @@ fn save_ui_preferences(
 async fn pick_runtime_path(kind: String) -> Result<Option<String>, String> {
     let selected = tokio::task::spawn_blocking(move || match kind.as_str() {
         "rife_directory" | "smoothie_root" => rfd::FileDialog::new().pick_folder(),
-        "rife_python" | "rife_script" | "rife_model" | "smoothie_executable" | "smoothie_recipe" | "ffmpeg" | "ffprobe" => {
-            rfd::FileDialog::new().pick_file()
-        }
+        "rife_python"
+        | "rife_script"
+        | "rife_model"
+        | "smoothie_executable"
+        | "smoothie_recipe"
+        | "ffmpeg"
+        | "ffprobe" => rfd::FileDialog::new().pick_file(),
         _ => None,
     })
     .await
@@ -677,17 +758,28 @@ async fn run_time_remap(
     let mut command = Command::new(&runtime.python);
     command
         .arg(&runtime.script)
-        .arg("--video").arg(&video_path)
-        .arg("--mode").arg(&mode)
-        .arg("--factor").arg(factor.to_string())
-        .arg("--crf").arg(crf.to_string())
-        .arg("--preset").arg(&preset)
-        .arg("--scene_threshold").arg(scene_threshold.to_string())
-        .arg("--blend-cuts").arg(blend_cuts.to_string())
-        .arg("--output").arg(&out_path)
-        .arg("--ffmpeg").arg(&runtime.media.ffmpeg)
-        .arg("--ffprobe").arg(&runtime.media.ffprobe)
-        .arg("--rife-dir").arg(&runtime.directory)
+        .arg("--video")
+        .arg(&video_path)
+        .arg("--mode")
+        .arg(&mode)
+        .arg("--factor")
+        .arg(factor.to_string())
+        .arg("--crf")
+        .arg(crf.to_string())
+        .arg("--preset")
+        .arg(&preset)
+        .arg("--scene_threshold")
+        .arg(scene_threshold.to_string())
+        .arg("--blend-cuts")
+        .arg(blend_cuts.to_string())
+        .arg("--output")
+        .arg(&out_path)
+        .arg("--ffmpeg")
+        .arg(&runtime.media.ffmpeg)
+        .arg("--ffprobe")
+        .arg(&runtime.media.ffprobe)
+        .arg("--rife-dir")
+        .arg(&runtime.directory)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
@@ -730,8 +822,10 @@ async fn run_smoothie(
     let mut command = Command::new(&runtime.executable);
     command
         .current_dir(&runtime.root)
-        .arg("-i").arg(&video_path)
-        .arg("-o").arg(&out_path_text)
+        .arg("-i")
+        .arg(&video_path)
+        .arg("-o")
+        .arg(&out_path_text)
         .arg("--progress");
     if !overrides.is_empty() {
         command.arg("--override");
@@ -746,8 +840,14 @@ async fn run_smoothie(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start smoothie-rs: {error}"))?;
-    let stdout = child.stdout.take().ok_or("Smoothie stdout was unavailable")?;
-    let stderr = child.stderr.take().ok_or("Smoothie stderr was unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Smoothie stdout was unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Smoothie stderr was unavailable")?;
     let output_app = app.clone();
     let error_app = app.clone();
     let output_task = tokio::spawn(async move { pump(stdout, output_app).await });
@@ -848,7 +948,10 @@ mod tests {
     #[test]
     fn interpolation_name_uses_only_the_actual_output_fps() {
         let output = rife_output_path(r"C:\media\clip.mp4", "boost", 12.0, 30.0).unwrap();
-        assert_eq!(output, std::path::PathBuf::from(r"C:\media\clip-360fps.mp4"));
+        assert_eq!(
+            output,
+            std::path::PathBuf::from(r"C:\media\clip-360fps.mp4")
+        );
     }
 
     #[test]

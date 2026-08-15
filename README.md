@@ -1,53 +1,80 @@
-# Dollrunner
+# CIA RENDER
 
-Dollrunner is a cross-platform desktop application built for save file mapping and visualizer updates. Engineered for high performance and a rich, interactive user experience, Dollrunner features a custom draggable titlebar, a frameless window layout, and a backend powered by Rust and C#.
+CIA RENDER is a local Windows desktop workflow for two video operations:
 
-## 🚀 Architecture
+- **INTERPOLATION** — RIFE frame interpolation.
+- **SMOOTHIE** — smoothie-rs frame blending and render finishing.
 
-Dollrunner is built on a modern, high-performance tech stack:
+Your media stays on the computer. CIA RENDER does not upload source videos or
+silently fetch render engines.
 
-- **Frontend**: Svelte 5 with Vite. Features a dynamic dashboard, interactive 3D model visualization, and responsive design tailored for desktop environments.
-- **Backend / Container**: Tauri v2 (Rust). Provides a secure, lightweight, and native application runtime with custom window controls and a frameless UI.
-- **Sidecar Process**: C# (.NET). A self-contained executable sidecar handles complex save decryption, extraction, and validation logic natively.
+## Install and first launch
 
-## 🛠 Features
+The Windows installer contains the CIA RENDER application, its local UI,
+fonts, and the RIFE orchestration script. It intentionally does **not** bundle
+the multi-gigabyte Python/CUDA environment, RIFE model weights, smoothie-rs,
+or FFmpeg.
 
-- **Custom Window Controls**: A borderless window with a draggable monochrome titlebar.
-- **Dashboard Interface**: Rich Trainer card statistics, dynamic gym badge SVGs with grayscale active/inactive state handling, and quick macro access.
-- **Interactive Visualizer**: 3D model inspection of Party and PC box items.
-- **Robust Save Processing**: C# sidecar integration to ensure secure, non-destructive data manipulation, avoiding OS execution errors.
+On first launch, Runtime Setup asks for explicit local paths to:
 
-## 📦 Requirements
+1. a Python runtime and the Practical-RIFE folder with `flownet.pkl`;
+2. `ffmpeg.exe` and `ffprobe.exe`;
+3. the smoothie-rs runtime folder and executable.
 
-To build or run Dollrunner from source, you must have the following installed:
-- [Node.js](https://nodejs.org/) (v18 or higher)
-- [Rust](https://www.rust-lang.org/tools/install) (latest stable)
-- [C# / .NET SDK](https://dotnet.microsoft.com/download) (for modifying the sidecar process)
+The setup screen can detect common local installations, but detection is only
+a convenience. Once saved, CIA RENDER uses only the paths in its configuration
+and never falls back to `PATH` during a render.
 
-## 🏃 Getting Started
+Configuration is stored per user in the CIA RENDER app-data directory as
+`config.json`. It contains local paths and UI preferences; it is not part of a
+Git checkout, installer, or release asset.
 
-### 1. Install Dependencies
-Run the following command to install the necessary frontend packages:
-```bash
-npm install
-```
+## Output names
 
-### 2. Development Mode
-To start the Svelte development server and the Tauri window simultaneously with hot-module replacement (HMR):
-```bash
+The Rust backend owns output paths and validates each file after a successful
+process. The UI never reconstructs a filename.
+
+| Operation | Example |
+| --- | --- |
+| RIFE at 360 FPS | `clip-360fps.mp4` |
+| Smoothie at 30 FPS | `clip_render30fps.mp4` |
+| Auto-chain RIFE 360 → Smoothie 30 | `clip-360fps_render30fps.mp4` |
+
+Existing destinations are never overwritten silently.
+
+## Build from source
+
+Prerequisites: current Node.js, Rust stable, and Windows build tools.
+
+```powershell
+npm ci
 npm run tauri dev
 ```
 
-### 3. Production Build
-To compile the frontend assets, compile the Rust backend, and bundle the final `.exe` (or your OS's respective installation package):
-```bash
+Create an NSIS installer:
+
+```powershell
 npm run tauri build
 ```
-The compiled binaries will be placed in `src-tauri/target/release/bundle/`.
 
-## 🔒 Security
+The build does not require local video runtimes. A render does.
 
-All secrets and keys must be handled via environment variables and are completely omitted from the repository. A complete history audit confirms zero leakages of API keys, tokens, or credentials within this repository.
+## Distribution policy
 
-## 📄 License
-This project is licensed under the MIT License.
+- The current Python/CUDA environment and RIFE model are external runtime
+  dependencies until their reproducible packaging and model distribution rights
+  are separately audited.
+- smoothie-rs and its bundled ecosystem remain external until their release and
+  licence inventory are approved for redistribution.
+- FFmpeg remains external: its licence obligations depend on the selected build.
+- Test videos, LUTs, local configuration, build outputs, runtime binaries and
+  model weights are excluded from Git and releases.
+
+See [Runtime and distribution notes](docs/PORTABILITY-PLAN.md) for the exact
+V1 boundaries.
+
+## Licence and notices
+
+CIA RENDER source code is MIT licensed. Third-party software keeps its own
+licence; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Nothing in this
+repository grants redistribution rights for an external runtime or model.

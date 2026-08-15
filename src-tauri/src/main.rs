@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    dollrunner_lib::run()
+    cia_render_lib::run()
 }

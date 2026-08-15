@@ -510,6 +510,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cia-render"
+version = "1.0.0"
+dependencies = [
+ "rfd",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -820,18 +832,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "dollrunner"
-version = "0.1.0"
-dependencies = [
- "rfd",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
 ]
 
 [[package]]

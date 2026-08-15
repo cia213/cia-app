@@ -31,6 +31,11 @@ __pycache__/
 *.pt
 *.onnx
 
-# Legacy Dollrunner sidecars; not part of CIA RENDER
+# Legacy sidecars; not part of CIA RENDER
 /src-tauri/SaveEditor-x86_64-pc-windows-msvc.exe
 /src-tauri/binaries/
+
+# Mobile icon variants are generated only when those targets are enabled.
+/src-tauri/icons/android/
+/src-tauri/icons/ios/
+/src-tauri/icons/64x64.png

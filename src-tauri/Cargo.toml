@@ -1,10 +1,10 @@
 [package]
-name = "dollrunner"
-version = "0.1.0"
+name = "cia-render"
+version = "1.0.0"
 edition = "2021"
 
 [lib]
-name = "dollrunner_lib"
+name = "cia_render_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]

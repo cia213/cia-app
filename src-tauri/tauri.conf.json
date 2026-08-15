@@ -1,7 +1,7 @@
 {
-  "productName": "TimeRemap",
-  "version": "0.1.0",
-  "identifier": "com.timeremap.app",
+  "productName": "CIA RENDER",
+  "version": "1.0.0",
+  "identifier": "com.ciarender.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -10,7 +10,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "shortDescription": "Local video interpolation and rendering.",
+    "longDescription": "CIA RENDER is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Runtime tools are configured by the user and are never uploaded.",
     "resources": ["resources/time_remap.py"],
     "icon": [
       "icons/32x32.png",
@@ -18,13 +20,21 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "CIA RENDER",
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
+    }
   },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "TimeRemap",
+        "title": "CIA RENDER",
         "width": 920,
         "height": 540,
         "resizable": false,
