@@ -6,6 +6,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# --- Fail fast: require an NVIDIA GPU before any download ---
+$NvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+if (-not $NvidiaSmi) {
+  throw 'ERROR: nvidia-smi not found. RIFE requires an NVIDIA GPU with CUDA support. Install aborted before any download.'
+}
+$GpuCheck = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($GpuCheck)) {
+  throw "ERROR: No NVIDIA GPU detected (nvidia-smi returned: $GpuCheck). RIFE requires CUDA. Install aborted before any download."
+}
+Write-Output "cia app SETUP: NVIDIA GPU detected: $($GpuCheck.Trim())"
+
 # This script only writes below RuntimeRoot, which cia app resolves inside its
 # per-user application data. Nothing is installed system-wide or added to PATH.
 $PythonHome = Join-Path $RuntimeRoot 'python'

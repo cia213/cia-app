@@ -832,6 +832,54 @@ where
     }
 }
 
+async fn pump_and_collect<R>(reader: R, app: tauri::AppHandle) -> Vec<String>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = reader;
+    let mut buf = [0u8; 4096];
+    let mut pending = String::new();
+    let mut collected = Vec::new();
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                pending.push_str(&chunk);
+                let (consumed, lines) = {
+                    let bytes = pending.as_bytes();
+                    let mut lines = Vec::new();
+                    let mut start = 0usize;
+                    for (index, byte) in bytes.iter().enumerate() {
+                        if *byte == b'\r' || *byte == b'\n' {
+                            if let Ok(segment) = std::str::from_utf8(&bytes[start..index]) {
+                                let trimmed = segment.trim();
+                                if !trimmed.is_empty() {
+                                    lines.push(trimmed.to_string());
+                                }
+                            }
+                            start = index + 1;
+                        }
+                    }
+                    (start, lines)
+                };
+                pending.drain(..consumed);
+                for line in &lines {
+                    let _ = app.emit("live-log", line);
+                }
+                collected.extend(lines);
+            }
+            Err(_) => break,
+        }
+    }
+    let trailing = pending.trim();
+    if !trailing.is_empty() {
+        let _ = app.emit("live-log", trailing);
+        collected.push(trailing.to_string());
+    }
+    collected
+}
+
 async fn probe_video(video_path: &str, ffprobe: &Path) -> Result<VideoInfo, String> {
     let mut command = Command::new(ffprobe);
     command
@@ -1151,14 +1199,25 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
     let output_app = app.clone();
     let error_app = app.clone();
     let output_task = tokio::spawn(async move { pump(stdout, output_app).await });
-    let error_task = tokio::spawn(async move { pump(stderr, error_app).await });
+    let error_task = tokio::spawn(async move { pump_and_collect(stderr, error_app).await });
     let status = child.wait().await.map_err(|error| error.to_string())?;
     let _ = output_task.await;
-    let _ = error_task.await;
+    let stderr_lines = error_task.await.unwrap_or_default();
     if !status.success() {
-        return Err(format!(
-            "RIFE environment installation failed ({status}). Review COPY LOGS for the exact step."
-        ));
+        let detail = stderr_lines
+            .iter()
+            .rev()
+            .find(|line| line.contains("ERROR:"))
+            .or_else(|| stderr_lines.last())
+            .cloned()
+            .unwrap_or_default();
+        return if detail.is_empty() {
+            Err(format!(
+                "RIFE environment installation failed ({status}). Review COPY LOGS for the exact step."
+            ))
+        } else {
+            Err(format!("RIFE environment installation failed: {detail}"))
+        };
     }
 
     let mut config = load_config(&app).unwrap_or_default();
