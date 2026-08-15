@@ -117,12 +117,16 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         raise FileNotFoundError(f"Raw RIFE output missing: {raw_interpolation}")
 
     print(f"\n[*] Finalizing output with FFmpeg (CRF {crf}, Preset {preset})...")
-    command = [ffmpeg_exe, "-y", "-i", raw_interpolation, "-map", "0:v:0"]
+    command = [ffmpeg_exe, "-y", "-i", raw_interpolation]
     video_filter = []
     audio_flags = []
     subtitle_flags = []
+    if info["has_audio"] or info["has_subtitles"]:
+        command.extend(["-i", source])
+
+    command.extend(["-map", "0:v:0"])
     if info["has_audio"]:
-        command.extend(["-i", source, "-map", "1:a:0"])
+        command.extend(["-map", "1:a:0?"])
         if mode == "slowmo":
             audio_flags = ["-c:a", "aac", "-b:a", "192k", "-filter:a", build_atempo_filter(1.0 / factor)]
             video_filter = ["-vf", f"setpts={factor}*PTS"]
@@ -132,7 +136,7 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         video_filter = ["-vf", f"setpts={factor}*PTS"]
 
     if info["has_subtitles"]:
-        command.extend(["-i", source, "-map", "2:s?"])
+        command.extend(["-map", "1:s?"])
         subtitle_flags = ["-c:s", "copy"]
 
     command.extend([
