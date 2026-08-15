@@ -39,3 +39,8 @@ __pycache__/
 /src-tauri/icons/android/
 /src-tauri/icons/ios/
 /src-tauri/icons/64x64.png
+
+# Release-only runtime payloads. They are packaged into the Windows installer
+# from a verified local release kit and are never committed to the source repo.
+/src-tauri/resources/runtime/
+/src-tauri/resources/bootstrap/python-*.exe

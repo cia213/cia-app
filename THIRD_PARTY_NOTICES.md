@@ -1,14 +1,17 @@
 # Third-party notices
 
-CIA RENDER invokes local, user-configured tools. Their presence in a setup
-screen does not make them part of the CIA RENDER distribution.
+CIA RENDER bundles the render payload described below. The optional RIFE
+environment is downloaded only after the user selects **INSTALL ENVIRONMENT**.
+Every public release must preserve the notices that ship alongside its staged
+runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
 
 | Component | Role | Licence / notice status in V1 |
 | --- | --- | --- |
-| Practical-RIFE | Local frame interpolation runtime | MIT licence in the upstream source (hzwer, 2021). Model-weight distribution is not implied. |
-| smoothie-rs | Optional local render runtime | External in V1. Preserve and audit the upstream release notices before redistribution. |
-| VapourSynth | May be supplied by an external Smoothie runtime | External in V1; its own licence controls any distribution. |
-| FFmpeg | Explicitly configured media tools | External in V1. Licence depends on the build selected by the user. |
+| Practical-RIFE | Optional local frame interpolation runtime | MIT licence in the upstream source (hzwer, 2021). Source and RIFE 4.26 weights are fetched after explicit user action; model-weight distribution is not implied by the installer. |
+| smoothie-rs | Bundled local render runtime | Bundled from a staged upstream portable runtime. Preserve its included `LICENSE.txt` and all plugin notices; record exact provenance for each release. |
+| VapourSynth | Supplied within the bundled Smoothie runtime | Its own LGPL terms and notices are preserved in the staged runtime payload. |
+| FFmpeg | Bundled media probing and encoding tools | Current staged build identifies itself as GPLv3. Public distribution requires the corresponding GPL notice and source-availability obligations for that exact build. |
+| Python 3.11.9 | Optional RIFE bootstrap | Official Windows installer bundled under the Python Software Foundation License; SHA-256 recorded in runtime release notes. |
 | Tauri | Desktop application framework | Apache-2.0 OR MIT according to installed dependency metadata. |
 | Svelte and Vite | Frontend framework and build tooling | MIT according to installed dependency metadata. |
 | IBM Plex Sans and Mono | Bundled frontend typography | SIL Open Font License 1.1 according to installed Fontsource metadata. |

@@ -2,8 +2,8 @@
 
 CIA RENDER is a local Windows desktop workflow for two video operations:
 
-- **INTERPOLATION** — RIFE frame interpolation.
-- **SMOOTHIE** — smoothie-rs frame blending and render finishing.
+- **RENDER** — smoothie-rs frame blending and render finishing.
+- **INTERPOLATION** — optional RIFE frame multiplication.
 
 Your media stays on the computer. CIA RENDER does not upload source videos or
 silently fetch render engines.
@@ -11,19 +11,23 @@ silently fetch render engines.
 ## Install and first launch
 
 The Windows installer contains the CIA RENDER application, its local UI,
-fonts, and the RIFE orchestration script. It intentionally does **not** bundle
-the multi-gigabyte Python/CUDA environment, RIFE model weights, smoothie-rs,
-or FFmpeg.
+fonts, smoothie-rs, its required plugins, and FFmpeg/FFprobe. A fresh
+installation therefore opens directly into **RENDER** with no runtime-path
+wizard and no dependency on a machine-wide `PATH`.
 
-On first launch, Runtime Setup asks for explicit local paths to:
+**INTERPOLATION** is intentionally optional: selecting **INSTALL ENVIRONMENT**
+downloads an isolated Python 3.11 / CUDA PyTorch / Practical-RIFE 4.26
+environment into CIA RENDER's per-user app-data folder. This is a large
+download, requires a CUDA-capable NVIDIA GPU, and is never downloaded by the
+installer or by merely launching the app.
 
-1. a Python runtime and the Practical-RIFE folder with `flownet.pkl`;
-2. `ffmpeg.exe` and `ffprobe.exe`;
-3. the smoothie-rs runtime folder and executable.
+The **RUNTIME** control is an advanced repair panel only. It can point CIA
+RENDER to an existing RIFE installation if the optional installer is not the
+right fit. It is not part of the normal first-run flow.
 
-The setup screen can detect common local installations, but detection is only
-a convenience. Once saved, CIA RENDER uses only the paths in its configuration
-and never falls back to `PATH` during a render.
+The bundled render tools are resolved from the installed application, and the
+RIFE installer saves only its per-user app-data paths. CIA RENDER never guesses
+a runtime path during an active render.
 
 Configuration is stored per user in the CIA RENDER app-data directory as
 `config.json`. It contains local paths and UI preferences; it is not part of a
@@ -57,21 +61,27 @@ Create an NSIS installer:
 npm run tauri build
 ```
 
-The build does not require local video runtimes. A render does.
+The release build also needs the ignored release payload in
+`src-tauri/resources/runtime/` (Smoothie and FFmpeg/FFprobe) plus the official
+Python installer in `src-tauri/resources/bootstrap/`. These files are excluded
+from Git on purpose; see the release notes below before redistributing them.
 
 ## Distribution policy
 
-- The current Python/CUDA environment and RIFE model are external runtime
-  dependencies until their reproducible packaging and model distribution rights
-  are separately audited.
-- smoothie-rs and its bundled ecosystem remain external until their release and
-  licence inventory are approved for redistribution.
-- FFmpeg remains external: its licence obligations depend on the selected build.
-- Test videos, LUTs, local configuration, build outputs, runtime binaries and
-  model weights are excluded from Git and releases.
+- RIFE's Python/CUDA environment and model are downloaded only after the user
+  explicitly requests INTERPOLATION; they are not committed to Git or included
+  in the NSIS installer.
+- The bundled FFmpeg build reports GPLv3. A public installer must ship its
+  matching notices and source-availability information with the exact runtime
+  payload used for that release.
+- Smoothie's release payload includes its upstream licence files and plugin
+  notices. Its exact release provenance must be recorded for every public build.
+- Test videos, LUTs, local configuration, build outputs, local runtime binaries
+  and model weights are excluded from Git. Release staging is a controlled,
+  reviewed exception rather than a source-tree dependency.
 
-See [Runtime and distribution notes](docs/PORTABILITY-PLAN.md) for the exact
-V1 boundaries.
+See [runtime release notes](docs/RUNTIME-RELEASE-NOTES.md) for the exact V1
+payload and release checklist.
 
 ## Licence and notices
 

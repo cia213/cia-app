@@ -12,8 +12,13 @@
     "active": true,
     "targets": ["nsis"],
     "shortDescription": "Local video interpolation and rendering.",
-    "longDescription": "CIA RENDER is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Runtime tools are configured by the user and are never uploaded.",
-    "resources": ["resources/time_remap.py"],
+    "longDescription": "CIA RENDER is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
+    "resources": [
+      "resources/time_remap.py",
+      "resources/runtime",
+      "resources/bootstrap/bootstrap-rife.ps1",
+      "resources/bootstrap/python-3.11.9-amd64.exe"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

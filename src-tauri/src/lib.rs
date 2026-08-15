@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -137,6 +139,187 @@ struct RifeRuntimePaths {
 struct SmoothieRuntimePaths {
     root: PathBuf,
     executable: PathBuf,
+    ffmpeg_directory: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+struct RenderJob {
+    process_id: u32,
+    paused: bool,
+    cancel_requested: bool,
+}
+
+#[derive(Default)]
+struct JobRegistry {
+    jobs: Mutex<HashMap<String, RenderJob>>,
+}
+
+fn register_job(registry: &tauri::State<JobRegistry>, job_id: &str, process_id: u32) -> Result<(), String> {
+    if job_id.trim().is_empty() {
+        return Err("A render job identifier is required".to_string());
+    }
+    let mut jobs = registry.jobs.lock().map_err(|_| "Render job registry is unavailable")?;
+    if jobs.contains_key(job_id) {
+        return Err("A render job with this identifier is already running".to_string());
+    }
+    jobs.insert(
+        job_id.to_string(),
+        RenderJob {
+            process_id,
+            paused: false,
+            cancel_requested: false,
+        },
+    );
+    Ok(())
+}
+
+fn running_job(registry: &tauri::State<JobRegistry>, job_id: &str) -> Result<RenderJob, String> {
+    registry
+        .jobs
+        .lock()
+        .map_err(|_| "Render job registry is unavailable")?
+        .get(job_id)
+        .copied()
+        .ok_or_else(|| "The render job is no longer running".to_string())
+}
+
+fn finish_job(registry: &tauri::State<JobRegistry>, job_id: &str) -> Result<Option<RenderJob>, String> {
+    Ok(registry
+        .jobs
+        .lock()
+        .map_err(|_| "Render job registry is unavailable")?
+        .remove(job_id))
+}
+
+#[cfg(target_os = "windows")]
+mod process_control {
+    use std::collections::VecDeque;
+    use std::ffi::c_void;
+    use std::mem::size_of;
+
+    type Handle = *mut c_void;
+    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    const PROCESS_SUSPEND_RESUME: u32 = 0x0000_0800;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
+        fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
+        fn OpenProcess(access: u32, inherit_handle: i32, process_id: u32) -> Handle;
+        fn CloseHandle(handle: Handle) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtSuspendProcess(process: Handle) -> i32;
+        fn NtResumeProcess(process: Handle) -> i32;
+    }
+
+    fn process_tree(root: u32) -> Result<Vec<u32>, String> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err("Unable to inspect the render process tree".to_string());
+        }
+
+        let result = (|| {
+            let mut entry = ProcessEntry32W {
+                dw_size: size_of::<ProcessEntry32W>() as u32,
+                cnt_usage: 0,
+                th32_process_id: 0,
+                th32_default_heap_id: 0,
+                th32_module_id: 0,
+                cnt_threads: 0,
+                th32_parent_process_id: 0,
+                pc_pri_class_base: 0,
+                dw_flags: 0,
+                sz_exe_file: [0; 260],
+            };
+            let mut parents = Vec::new();
+            if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
+                loop {
+                    parents.push((entry.th32_process_id, entry.th32_parent_process_id));
+                    entry.dw_size = size_of::<ProcessEntry32W>() as u32;
+                    if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                        break;
+                    }
+                }
+            }
+
+            let mut tree = vec![root];
+            let mut queue = VecDeque::from([root]);
+            while let Some(parent) = queue.pop_front() {
+                for (process_id, parent_id) in &parents {
+                    if *parent_id == parent && !tree.contains(process_id) {
+                        tree.push(*process_id);
+                        queue.push_back(*process_id);
+                    }
+                }
+            }
+            Ok(tree)
+        })();
+        unsafe { CloseHandle(snapshot) };
+        result
+    }
+
+    pub fn set_process_tree_paused(root: u32, paused: bool) -> Result<(), String> {
+        let mut tree = process_tree(root)?;
+        if paused {
+            tree.reverse();
+        }
+        let mut affected = 0usize;
+        for process_id in tree {
+            let handle = unsafe { OpenProcess(PROCESS_SUSPEND_RESUME, 0, process_id) };
+            if handle.is_null() {
+                continue;
+            }
+            let status = unsafe {
+                if paused {
+                    NtSuspendProcess(handle)
+                } else {
+                    NtResumeProcess(handle)
+                }
+            };
+            unsafe { CloseHandle(handle) };
+            if status >= 0 {
+                affected += 1;
+            }
+        }
+        if affected == 0 {
+            return Err("The render process ended before it could be controlled".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn cancel_process_tree(process_id: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &process_id.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|error| format!("Unable to cancel the render process: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("The render process ended before it could be cancelled".to_string())
+    }
 }
 
 fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -239,14 +422,45 @@ fn path_text(path: Option<PathBuf>) -> Option<String> {
     path.map(|value| value.to_string_lossy().to_string())
 }
 
-fn bundled_rife_script(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn bundled_resource(app: &tauri::AppHandle, relative: &str) -> Option<PathBuf> {
     let resource_dir = app.path().resource_dir().ok()?;
     [
-        resource_dir.join("resources").join("time_remap.py"),
-        resource_dir.join("time_remap.py"),
+        resource_dir.join("resources").join(relative),
+        resource_dir.join(relative),
     ]
     .into_iter()
-    .find(|path| path.is_file())
+    .find(|path| path.exists())
+}
+
+fn bundled_rife_script(app: &tauri::AppHandle) -> Option<PathBuf> {
+    bundled_resource(app, "time_remap.py").filter(|path| path.is_file())
+}
+
+fn bundled_media_tools(app: &tauri::AppHandle) -> Option<MediaToolPaths> {
+    let ffmpeg = bundled_resource(app, "runtime/ffmpeg/ffmpeg.exe")?;
+    let ffprobe = bundled_resource(app, "runtime/ffmpeg/ffprobe.exe")?;
+    (ffmpeg.is_file() && ffprobe.is_file()).then_some(MediaToolPaths { ffmpeg, ffprobe })
+}
+
+fn bundled_smoothie_runtime(
+    app: &tauri::AppHandle,
+    media: &MediaToolPaths,
+) -> Option<SmoothieRuntimePaths> {
+    let root = bundled_resource(app, "runtime/smoothie")?;
+    let executable = root.join("bin").join("smoothie-rs.exe");
+    let ffmpeg_directory = media.ffmpeg.parent()?.to_path_buf();
+    (root.is_dir() && executable.is_file()).then_some(SmoothieRuntimePaths {
+        root,
+        executable,
+        ffmpeg_directory,
+    })
+}
+
+fn rife_install_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("runtimes").join("rife"))
+        .map_err(|error| format!("Unable to resolve the CIA RENDER runtime directory: {error}"))
 }
 
 fn effective_rife_script(config: &RuntimeConfig, app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -359,11 +573,24 @@ fn snapshot_from_config(
     let rife_directory = existing_directory(&config.rife.directory)
         .filter(|directory| directory.join("inference_video.py").is_file());
     let model = existing_file(&config.rife.model_file);
-    let ffmpeg = existing_file(&config.media_tools.ffmpeg);
-    let ffprobe = existing_file(&config.media_tools.ffprobe);
-    let smoothie_root = existing_directory(&config.smoothie.root);
-    let smoothie_executable = existing_file(&config.smoothie.executable);
-    let smoothie_recipe = existing_file(&config.smoothie.recipe);
+    let bundled_media = bundled_media_tools(app);
+    let ffmpeg = existing_file(&config.media_tools.ffmpeg)
+        .or_else(|| bundled_media.as_ref().map(|media| media.ffmpeg.clone()));
+    let ffprobe = existing_file(&config.media_tools.ffprobe)
+        .or_else(|| bundled_media.as_ref().map(|media| media.ffprobe.clone()));
+    let bundled_smoothie = bundled_media
+        .as_ref()
+        .and_then(|media| bundled_smoothie_runtime(app, media));
+    let smoothie_root = existing_directory(&config.smoothie.root)
+        .or_else(|| bundled_smoothie.as_ref().map(|runtime| runtime.root.clone()));
+    let smoothie_executable = existing_file(&config.smoothie.executable)
+        .or_else(|| bundled_smoothie.as_ref().map(|runtime| runtime.executable.clone()));
+    let smoothie_recipe = existing_file(&config.smoothie.recipe).or_else(|| {
+        bundled_smoothie
+            .as_ref()
+            .map(|runtime| runtime.root.join("recipe.ini"))
+            .filter(|recipe| recipe.is_file())
+    });
 
     let components = vec![
         component_status(
@@ -450,11 +677,17 @@ fn required_directory(value: &Option<String>, label: &str) -> Result<PathBuf, St
         .ok_or_else(|| format!("{label} is not configured. Open Runtime Setup."))
 }
 
-fn media_tools(config: &RuntimeConfig) -> Result<MediaToolPaths, String> {
-    Ok(MediaToolPaths {
-        ffmpeg: required_file(&config.media_tools.ffmpeg, "FFmpeg")?,
-        ffprobe: required_file(&config.media_tools.ffprobe, "FFprobe")?,
-    })
+fn media_tools(config: &RuntimeConfig, app: &tauri::AppHandle) -> Result<MediaToolPaths, String> {
+    match (
+        existing_file(&config.media_tools.ffmpeg),
+        existing_file(&config.media_tools.ffprobe),
+    ) {
+        (Some(ffmpeg), Some(ffprobe)) => Ok(MediaToolPaths { ffmpeg, ffprobe }),
+        _ => bundled_media_tools(app).ok_or_else(|| {
+            "Bundled FFmpeg tools are unavailable. Reinstall CIA RENDER or configure Runtime paths."
+                .to_string()
+        }),
+    }
 }
 
 fn rife_runtime(
@@ -476,15 +709,33 @@ fn rife_runtime(
         python: required_file(&config.rife.python_executable, "Python runtime")?,
         script,
         directory,
-        media: media_tools(config)?,
+        media: media_tools(config, app)?,
     })
 }
 
-fn smoothie_runtime(config: &RuntimeConfig) -> Result<SmoothieRuntimePaths, String> {
-    Ok(SmoothieRuntimePaths {
-        root: required_directory(&config.smoothie.root, "Smoothie root")?,
-        executable: required_file(&config.smoothie.executable, "smoothie-rs")?,
-    })
+fn smoothie_runtime(
+    config: &RuntimeConfig,
+    app: &tauri::AppHandle,
+) -> Result<SmoothieRuntimePaths, String> {
+    let media = media_tools(config, app)?;
+    match (
+        existing_directory(&config.smoothie.root),
+        existing_file(&config.smoothie.executable),
+    ) {
+        (Some(root), Some(executable)) => Ok(SmoothieRuntimePaths {
+            root,
+            executable,
+            ffmpeg_directory: media
+                .ffmpeg
+                .parent()
+                .ok_or("Invalid FFmpeg path")?
+                .to_path_buf(),
+        }),
+        _ => bundled_smoothie_runtime(app, &media).ok_or_else(|| {
+            "Bundled Smoothie is unavailable. Reinstall CIA RENDER or configure Runtime paths."
+                .to_string()
+        }),
+    }
 }
 
 async fn pump<R>(reader: R, app: tauri::AppHandle)
@@ -734,13 +985,135 @@ async fn pick_runtime_path(kind: String) -> Result<Option<String>, String> {
 #[tauri::command]
 async fn analyze_video(app: tauri::AppHandle, video_path: String) -> Result<VideoInfo, String> {
     let config = load_config(&app)?;
-    let media = media_tools(&config)?;
+    let media = media_tools(&config, &app)?;
     probe_video(&video_path, &media.ffprobe).await
+}
+
+#[tauri::command]
+async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapshot, String> {
+    let bootstrap = bundled_resource(&app, "bootstrap/bootstrap-rife.ps1")
+        .filter(|path| path.is_file())
+        .ok_or("The bundled RIFE installer script is missing. Reinstall CIA RENDER.")?;
+    let python_installer = bundled_resource(&app, "bootstrap/python-3.11.9-amd64.exe")
+        .filter(|path| path.is_file())
+        .ok_or("The bundled Python installer is missing. Reinstall CIA RENDER.")?;
+    let root = rife_install_root(&app)?;
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("Unable to create {}: {error}", root.display()))?;
+
+    let mut command = Command::new("powershell.exe");
+    command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&bootstrap)
+        .arg("-RuntimeRoot")
+        .arg(&root)
+        .arg("-PythonInstaller")
+        .arg(&python_installer)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to start the RIFE environment installer: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("RIFE installer stdout was unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("RIFE installer stderr was unavailable")?;
+    let output_app = app.clone();
+    let error_app = app.clone();
+    let output_task = tokio::spawn(async move { pump(stdout, output_app).await });
+    let error_task = tokio::spawn(async move { pump(stderr, error_app).await });
+    let status = child.wait().await.map_err(|error| error.to_string())?;
+    let _ = output_task.await;
+    let _ = error_task.await;
+    if !status.success() {
+        return Err(format!(
+            "RIFE environment installation failed ({status}). Review COPY LOGS for the exact step."
+        ));
+    }
+
+    let mut config = load_config(&app).unwrap_or_default();
+    config.rife = RifeConfig {
+        python_executable: path_text(Some(root.join("venv").join("Scripts").join("python.exe"))),
+        script: None,
+        directory: path_text(Some(root.join("Practical-RIFE"))),
+        model_file: path_text(Some(
+            root.join("Practical-RIFE").join("train_log").join("flownet.pkl"),
+        )),
+    };
+    let config = normalize_config(config);
+    rife_runtime(&config, &app)?;
+    write_config(&app, &config)?;
+    Ok(runtime_snapshot(&app))
+}
+
+#[tauri::command]
+fn pause_render(job_id: String, registry: tauri::State<JobRegistry>) -> Result<(), String> {
+    let job = running_job(&registry, &job_id)?;
+    if job.paused {
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    process_control::set_process_tree_paused(job.process_id, true)?;
+    #[cfg(not(target_os = "windows"))]
+    return Err("Pause is currently supported on Windows only".to_string());
+
+    let mut jobs = registry.jobs.lock().map_err(|_| "Render job registry is unavailable")?;
+    if let Some(entry) = jobs.get_mut(&job_id) {
+        entry.paused = true;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_render(job_id: String, registry: tauri::State<JobRegistry>) -> Result<(), String> {
+    let job = running_job(&registry, &job_id)?;
+    if !job.paused {
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    process_control::set_process_tree_paused(job.process_id, false)?;
+    #[cfg(not(target_os = "windows"))]
+    return Err("Resume is currently supported on Windows only".to_string());
+
+    let mut jobs = registry.jobs.lock().map_err(|_| "Render job registry is unavailable")?;
+    if let Some(entry) = jobs.get_mut(&job_id) {
+        entry.paused = false;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_render(job_id: String, registry: tauri::State<JobRegistry>) -> Result<(), String> {
+    let job = running_job(&registry, &job_id)?;
+    {
+        let mut jobs = registry.jobs.lock().map_err(|_| "Render job registry is unavailable")?;
+        if let Some(entry) = jobs.get_mut(&job_id) {
+            entry.cancel_requested = true;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    return cancel_process_tree(job.process_id);
+    #[cfg(not(target_os = "windows"))]
+    Err("Cancel is currently supported on Windows only".to_string())
 }
 
 #[tauri::command]
 async fn run_time_remap(
     app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
     video_path: String,
     mode: String,
     factor: f64,
@@ -788,6 +1161,10 @@ async fn run_time_remap(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start Python runtime: {error}"))?;
+    let process_id = child
+        .id()
+        .ok_or("The RIFE process did not expose a process identifier")?;
+    register_job(&registry, &job_id, process_id)?;
     let stdout = child.stdout.take().ok_or("Python stdout was unavailable")?;
     let stderr = child.stderr.take().ok_or("Python stderr was unavailable")?;
     let output_app = app.clone();
@@ -797,6 +1174,16 @@ async fn run_time_remap(
     let status = child.wait().await.map_err(|error| error.to_string())?;
     let _ = output_task.await;
     let _ = error_task.await;
+    let cancelled = finish_job(&registry, &job_id)?
+        .map(|job| job.cancel_requested)
+        .unwrap_or(false);
+
+    if cancelled {
+        if out_path.exists() {
+            let _ = fs::remove_file(&out_path);
+        }
+        return Err("CIA_RENDER_CANCELLED".to_string());
+    }
 
     if status.success() {
         ensure_nonempty_file(&out_path, "RIFE")?;
@@ -809,19 +1196,27 @@ async fn run_time_remap(
 #[tauri::command]
 async fn run_smoothie(
     app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    job_id: String,
     video_path: String,
     output_fps: u32,
     overrides: Vec<String>,
 ) -> Result<String, String> {
     let config = load_config(&app)?;
-    let runtime = smoothie_runtime(&config)?;
+    let runtime = smoothie_runtime(&config, &app)?;
     let out_path = smoothie_output_path(&video_path, output_fps)?;
     ensure_destination_available(&out_path)?;
     let out_path_text = out_path.to_string_lossy().to_string();
 
     let mut command = Command::new(&runtime.executable);
+    let inherited_path = env::var_os("PATH").unwrap_or_default();
+    let scoped_path = env::join_paths(
+        std::iter::once(runtime.ffmpeg_directory.clone()).chain(env::split_paths(&inherited_path)),
+    )
+    .map_err(|error| format!("Unable to prepare bundled media-tool path: {error}"))?;
     command
         .current_dir(&runtime.root)
+        .env("PATH", scoped_path)
         .arg("-i")
         .arg(&video_path)
         .arg("-o")
@@ -840,6 +1235,10 @@ async fn run_smoothie(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start smoothie-rs: {error}"))?;
+    let process_id = child
+        .id()
+        .ok_or("The Smoothie process did not expose a process identifier")?;
+    register_job(&registry, &job_id, process_id)?;
     let stdout = child
         .stdout
         .take()
@@ -855,6 +1254,16 @@ async fn run_smoothie(
     let status = child.wait().await.map_err(|error| error.to_string())?;
     let _ = output_task.await;
     let _ = error_task.await;
+    let cancelled = finish_job(&registry, &job_id)?
+        .map(|job| job.cancel_requested)
+        .unwrap_or(false);
+
+    if cancelled {
+        if out_path.exists() {
+            let _ = fs::remove_file(&out_path);
+        }
+        return Err("CIA_RENDER_CANCELLED".to_string());
+    }
 
     if status.success() {
         ensure_nonempty_file(&out_path, "Smoothie")?;
@@ -924,12 +1333,17 @@ fn open_about_link(url: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(JobRegistry::default())
         .invoke_handler(tauri::generate_handler![
             get_runtime_snapshot,
             save_runtime_config,
             save_ui_preferences,
             pick_runtime_path,
             analyze_video,
+            install_rife_environment,
+            pause_render,
+            resume_render,
+            cancel_render,
             run_time_remap,
             run_smoothie,
             open_file_dialog,
@@ -960,6 +1374,50 @@ mod tests {
         assert_eq!(
             output,
             std::path::PathBuf::from(r"C:\media\clip-360fps_render30fps.mp4")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    fn sleeping_process(seconds: u32) -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("Start-Sleep -Seconds {seconds}"),
+            ])
+            .creation_flags(super::CREATE_NO_WINDOW)
+            .spawn()
+            .expect("start controlled test process")
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pause_and_resume_controls_a_live_process() {
+        let mut child = sleeping_process(2);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        super::process_control::set_process_tree_paused(child.id(), true)
+            .expect("pause live process tree");
+        std::thread::sleep(std::time::Duration::from_millis(2200));
+        assert!(
+            child.try_wait().expect("inspect paused process").is_none(),
+            "the paused process should not complete while suspended"
+        );
+        super::process_control::set_process_tree_paused(child.id(), false)
+            .expect("resume live process tree");
+        assert!(child.wait().expect("wait resumed process").success());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cancel_terminates_a_live_process_tree() {
+        let mut child = sleeping_process(10);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        super::cancel_process_tree(child.id()).expect("cancel live process tree");
+        assert!(
+            !child.wait().expect("wait cancelled process").success(),
+            "a cancelled process must not report success"
         );
     }
 }
