@@ -1,7 +1,7 @@
 {
   "name": "cia-render",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Local Windows video rendering with smoothie-rs and optional RIFE interpolation.",
   "repository": {
     "type": "git",

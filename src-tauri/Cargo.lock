@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "cia-render"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "rfd",
  "serde",

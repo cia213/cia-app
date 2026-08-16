@@ -30,7 +30,7 @@
   let installStep = $state(0);
   let installTotal = $state(0);
   let installLabel = $state('');
-  let appVersion = $state('1.0.0');
+  let appVersion = $state('1.0.2');
   let discordCopyFeedback = $state(false);
   let shouldShowExecutionLogs = $state(false);
 

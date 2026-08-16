@@ -1,6 +1,6 @@
 {
   "productName": "cia app",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "identifier": "io.github.cia213.ciaapp",
   "build": {
     "beforeDevCommand": "npm run dev",
