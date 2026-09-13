@@ -1373,7 +1373,7 @@
             <p>Local render workflow, credits and contact.</p>
           </div>
           <div class="about-contacts">
-            <button class="about-update-btn" onclick={() => checkForAppUpdates(true)} aria-label="Check for cia render updates" disabled={updateState === 'checking' || updateState === 'downloading'}>
+            <button class="about-update-btn" class:has-update={!!availableUpdate} onclick={() => checkForAppUpdates(true)} aria-label="Check for cia render updates" disabled={updateState === 'checking' || updateState === 'downloading'}>
               {#if updateState === 'checking'}
                 <span>CHECKING...</span>
               {:else if availableUpdate}
@@ -2067,13 +2067,17 @@
     gap: 8px;
     margin-left: auto;
   }
+  .about-update-btn,
   .discord-contact,
   .github-contact {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 7px;
-    margin-left: 0;
-    padding: 8px 10px;
+    height: 36px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 12px;
     border: 1px solid #27272a;
     border-radius: 5px;
     background: #0d0d10;
@@ -2083,6 +2087,7 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.03em;
+    line-height: 1;
     transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
   }
   .discord-contact svg,
@@ -2090,20 +2095,35 @@
     width: 17px;
     height: 17px;
     fill: currentColor;
+    flex-shrink: 0;
   }
+  .about-update-btn:hover:not(:disabled),
   .discord-contact:hover,
   .discord-contact:focus-visible,
   .github-contact:hover,
   .github-contact:focus-visible {
     border-color: rgba(255, 255, 255, 0.42);
     background: #16161a;
-    color: #fff;
+    color: #ffffff;
     outline: none;
   }
+  .about-update-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .about-update-btn.has-update {
+    background: #000000;
+    border-color: #ffffff;
+    color: #ffffff;
+  }
+  .about-update-btn.has-update:hover:not(:disabled) {
+    background: #18181b;
+    border-color: #ffffff;
+    color: #ffffff;
+  }
   .github-contact {
-    justify-content: center;
-    width: 37px;
-    padding-inline: 0;
+    width: 36px;
+    padding: 0;
   }
 
   .about-link-card {
@@ -3005,31 +3025,6 @@
     box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
   }
 
-  .about-update-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 8px 10px;
-    border: 1px solid #ffffff;
-    border-radius: 5px;
-    background: #000000;
-    color: #ffffff;
-    cursor: pointer;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.03em;
-    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
-  }
-  .about-update-btn:hover:not(:disabled) {
-    background: #18181b;
-    border-color: #ffffff;
-    color: #ffffff;
-  }
-  .about-update-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
   .update-ready-text {
     display: flex;
     align-items: center;
