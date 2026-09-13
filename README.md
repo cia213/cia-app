@@ -13,12 +13,12 @@ silently fetch render engines.
 <table>
   <tr>
     <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=8plMwxkAvlA">
+      <a href="https://www.youtube.com/watch?v=bR7FxKNNV0Y">
         <img src="docs/video_preview.png" width="100%" alt="cia render video preview 1">
       </a>
     </td>
     <td align="center" width="50%">
-      <a href="https://www.youtube.com/watch?v=bR7FxKNNV0Y">
+      <a href="https://www.youtube.com/watch?v=8plMwxkAvlA">
         <img src="docs/video_preview_2.png" width="100%" alt="cia render video preview 2">
       </a>
     </td>
