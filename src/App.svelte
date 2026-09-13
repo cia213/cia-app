@@ -20,6 +20,12 @@
   let progress = $state(0);
   let elapsedTime = $state('00:00');
   let remainingTime = $state('--:--');
+  let isEncodingPhase = $state(false);
+  let encodingProgress = $state(0);
+  let encodingSpeed = $state('');
+  let encodingFps = $state('');
+  let encodingFrame = $state(0);
+  let encodingTime = $state('');
   let isHoveringTimer = $state(false);
   let copyFeedback = $state(false);
   let toast = $state({ show: false, message: '', type: 'info' });
@@ -341,6 +347,12 @@
     progress = 0;
     elapsedTime = '00:00';
     remainingTime = '--:--';
+    isEncodingPhase = false;
+    encodingProgress = 0;
+    encodingSpeed = '';
+    encodingFps = '';
+    encodingFrame = 0;
+    encodingTime = '';
   }
 
   function resetRunState() {
@@ -401,18 +413,71 @@
 
   function parseLogLine(line) {
     appendLog(line);
-    if (line.includes('Finalizing output') || line.includes('FFmpeg') || /^frame=/.test(line)) {
-      remainingTime = 'Encoding export...';
-      if (progress < 99) progress = 99;
+
+    const isFfmpegProgress = line.includes('frame=') && (line.includes('time=') || line.includes('fps='));
+    if (isFfmpegProgress || line.includes('Finalizing output') || line.includes('FFmpeg')) {
+      isEncodingPhase = true;
     }
-    const rifePct = line.match(/^\s*(\d{1,3})%/);
-    if (rifePct) progress = parseInt(rifePct[1], 10);
-    const smPct = line.match(/(\d+(?:\.\d+)?)%\s*\u2022/);
-    if (smPct) progress = Math.round(parseFloat(smPct[1]));
-    const rifeTimer = line.match(/\[(\d+(?::\d+)+)<(\d+(?::\d+)+)/);
-    if (rifeTimer) { elapsedTime = rifeTimer[1]; remainingTime = rifeTimer[2]; }
-    const smTimer = line.match(/(\d+:\d{2})\s*>\s*(\d+:\d{2})/);
-    if (smTimer) { elapsedTime = smTimer[1]; remainingTime = smTimer[2]; }
+
+    if (isFfmpegProgress) {
+      const frameMatch = line.match(/frame=\s*(\d+)/);
+      if (frameMatch) encodingFrame = parseInt(frameMatch[1], 10);
+
+      const fpsMatch = line.match(/fps=\s*([\d.]+)/);
+      if (fpsMatch) encodingFps = fpsMatch[1];
+
+      const speedMatch = line.match(/speed=\s*([\d.]+)x/);
+      if (speedMatch) encodingSpeed = `${speedMatch[1]}x`;
+
+      const timeMatch = line.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+      if (timeMatch) {
+        const hours = parseInt(timeMatch[1], 10);
+        const minutes = parseInt(timeMatch[2], 10);
+        const seconds = parseFloat(timeMatch[3]);
+        const curSec = hours * 3600 + minutes * 60 + seconds;
+        encodingTime = `${timeMatch[1]}:${timeMatch[2]}:${Math.floor(seconds).toString().padStart(2, '0')}`;
+
+        let targetDuration = 0;
+        if (activePage === 'smoothie' && smoothieInfo?.duration) {
+          targetDuration = smoothieInfo.duration;
+        } else if (videoInfo?.duration) {
+          targetDuration = rifeSettings.mode === 'slowmo'
+            ? videoInfo.duration * (Number(rifeSettings.factor) || 2)
+            : videoInfo.duration;
+        }
+
+        if (targetDuration > 0) {
+          const calculatedPct = Math.min(99, Math.max(1, Math.round((curSec / targetDuration) * 100)));
+          encodingProgress = calculatedPct;
+          progress = calculatedPct;
+
+          if (speedMatch) {
+            const speedVal = parseFloat(speedMatch[1]);
+            if (speedVal > 0) {
+              const remSec = Math.max(0, Math.round((targetDuration - curSec) / speedVal));
+              const remMins = Math.floor(remSec / 60);
+              const remSecs = remSec % 60;
+              remainingTime = `${remMins.toString().padStart(2, '0')}:${remSecs.toString().padStart(2, '0')}`;
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    if (!isEncodingPhase) {
+      const rifePct = line.match(/^\s*(\d{1,3})%/);
+      if (rifePct) progress = parseInt(rifePct[1], 10);
+
+      const smPct = line.match(/(\d+(?:\.\d+)?)%\s*\u2022/);
+      if (smPct) progress = Math.round(parseFloat(smPct[1]));
+
+      const rifeTimer = line.match(/\[(\d+(?::\d+)+)<(\d+(?::\d+)+)/);
+      if (rifeTimer) { elapsedTime = rifeTimer[1]; remainingTime = rifeTimer[2]; }
+
+      const smTimer = line.match(/(\d+:\d{2})\s*>\s*(\d+:\d{2})/);
+      if (smTimer) { elapsedTime = smTimer[1]; remainingTime = smTimer[2]; }
+    }
   }
 
   async function copyLogsToClipboard() {
@@ -1030,27 +1095,13 @@
         {#if isProcessing}
           <div class="pro-render-card">
             <header class="pro-header">
-              <div class="pro-title-group">
-                <span class="pro-pulse-dot" class:paused={isRenderPaused} aria-hidden="true"></span>
-                <svg class="pro-file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
-                </svg>
-                <h3 class="pro-filename" title={videoPath.split(/[\\/]/).pop()}>{videoPath.split(/[\\/]/).pop()}</h3>
-              </div>
-              <span class="pro-engine-badge">
-                <span class="badge-accent"></span>
-                {jobPhase === 'smoothie' ? 'SMOOTHIE-RS ENGINE' : 'RIFE 4.26 ENGINE'}
-              </span>
+              <h3 class="pro-filename" title={videoPath.split(/[\\/]/).pop()}>{videoPath.split(/[\\/]/).pop()}</h3>
             </header>
 
             <div class="pro-pipeline-box">
               <div class="pipeline-node">
                 <span class="node-label">INPUT</span>
-                <div class="node-val-group">
-                  <span class="node-res">{videoInfo.width}×{videoInfo.height}</span>
-                  <span class="node-fps">@{videoInfo.fps.toFixed(0)} FPS</span>
-                </div>
+                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {videoInfo.fps.toFixed(0)} FPS</span>
               </div>
               <div class="pipeline-arrow" aria-hidden="true">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1059,10 +1110,7 @@
               </div>
               <div class="pipeline-node">
                 <span class="node-label">OUTPUT</span>
-                <div class="node-val-group">
-                  <span class="node-res">{videoInfo.width}×{videoInfo.height}</span>
-                  <span class="node-fps">@{outputFps.toFixed(0)} FPS <span class="node-factor">({rifeSettings.factor}x)</span></span>
-                </div>
+                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {outputFps.toFixed(0)} FPS ({rifeSettings.factor}x)</span>
               </div>
               <div class="pipeline-tags">
                 <span class="chip">H.264 CRF {rifeSettings.crf}</span>
@@ -1076,9 +1124,11 @@
                 <span class="telemetry-val highlight">
                   {isRenderPaused
                     ? 'RIFE PAUSED'
+                    : isEncodingPhase
+                    ? (encodingSpeed ? `ENCODING (${encodingSpeed})` : 'ENCODING EXPORT')
                     : jobPhase === 'smoothie'
-                    ? (progress >= 99 || remainingTime === 'Encoding export...' ? 'SMOOTHIE ENCODING' : 'SMOOTHIE RENDERING')
-                    : (progress >= 99 || remainingTime === 'Encoding export...' ? 'RIFE ENCODING' : 'RIFE PROCESSING')}
+                    ? 'SMOOTHIE RENDERING'
+                    : 'RIFE PROCESSING'}
                 </span>
               </div>
               <div class="telemetry-cell">
@@ -1089,24 +1139,24 @@
                 <span class="telemetry-label">EST. REMAINING</span>
                 <span class="telemetry-val mono">{remainingTime}</span>
               </div>
-              <div class="telemetry-cell">
-                <span class="telemetry-label">PROGRESS</span>
-                <span class="telemetry-val mono highlight-pct">{progress}%</span>
-              </div>
             </div>
 
             <div class="pro-progress-card">
               <div class="pro-progress-header">
                 <span class="progress-stage-name">
-                  {progress >= 99 || remainingTime === 'Encoding export...' ? 'ENCODING EXPORT CONTAINER' : 'INTERPOLATING FRAMES'}
+                  {#if isEncodingPhase}
+                    ENCODING EXPORT CONTAINER {encodingFrame > 0 ? `• FRAME ${encodingFrame.toLocaleString()} • ${encodingFps} FPS` : ''}
+                  {:else if jobPhase === 'smoothie'}
+                    SMOOTHIE RENDERING
+                  {:else}
+                    INTERPOLATING FRAMES
+                  {/if}
                 </span>
                 <span class="pro-percent-hero">{progress}%</span>
               </div>
               <div class="pro-track">
-                <div class="pro-fill" style="width: {progress}%">
-                  <div class="pro-fill-head"></div>
-                </div>
-                {#if progress >= 99 || remainingTime === 'Encoding export...'}
+                <div class="pro-fill" style="width: {progress}%"></div>
+                {#if isEncodingPhase && progress < 100}
                   <div class="pro-fill-encoding"></div>
                 {/if}
               </div>
@@ -1202,27 +1252,13 @@
         {#if isSmoothieProcessing}
           <div class="pro-render-card">
             <header class="pro-header">
-              <div class="pro-title-group">
-                <span class="pro-pulse-dot" aria-hidden="true"></span>
-                <svg class="pro-file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
-                </svg>
-                <h3 class="pro-filename" title={smoothiePath.split(/[\\/]/).pop()}>{smoothiePath.split(/[\\/]/).pop()}</h3>
-              </div>
-              <span class="pro-engine-badge">
-                <span class="badge-accent"></span>
-                SMOOTHIE-RS ENGINE
-              </span>
+              <h3 class="pro-filename" title={smoothiePath.split(/[\\/]/).pop()}>{smoothiePath.split(/[\\/]/).pop()}</h3>
             </header>
 
             <div class="pro-pipeline-box">
               <div class="pipeline-node">
                 <span class="node-label">INPUT</span>
-                <div class="node-val-group">
-                  <span class="node-res">{smoothieInfo.width}×{smoothieInfo.height}</span>
-                  <span class="node-fps">@{smoothieInfo.fps.toFixed(0)} FPS</span>
-                </div>
+                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieInfo.fps.toFixed(0)} FPS</span>
               </div>
               <div class="pipeline-arrow" aria-hidden="true">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1231,10 +1267,7 @@
               </div>
               <div class="pipeline-node">
                 <span class="node-label">OUTPUT</span>
-                <div class="node-val-group">
-                  <span class="node-res">{smoothieInfo.width}×{smoothieInfo.height}</span>
-                  <span class="node-fps">@{smoothieSettings.fps} FPS</span>
-                </div>
+                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieSettings.fps} FPS</span>
               </div>
               <div class="pipeline-tags">
                 <span class="chip">LUT: {smoothieSettings.lutEnabled === 'yes' ? 'ON' : 'OFF'}</span>
@@ -1246,7 +1279,9 @@
               <div class="telemetry-cell">
                 <span class="telemetry-label">STATUS</span>
                 <span class="telemetry-val highlight">
-                  {progress >= 99 || remainingTime === 'Encoding export...' ? 'ENCODING EXPORT' : 'RENDERING'}
+                  {isEncodingPhase
+                    ? (encodingSpeed ? `ENCODING (${encodingSpeed})` : 'ENCODING EXPORT')
+                    : 'RENDERING'}
                 </span>
               </div>
               <div class="telemetry-cell">
@@ -1257,24 +1292,22 @@
                 <span class="telemetry-label">EST. REMAINING</span>
                 <span class="telemetry-val mono">{remainingTime}</span>
               </div>
-              <div class="telemetry-cell">
-                <span class="telemetry-label">PROGRESS</span>
-                <span class="telemetry-val mono highlight-pct">{progress}%</span>
-              </div>
             </div>
 
             <div class="pro-progress-card">
               <div class="pro-progress-header">
                 <span class="progress-stage-name">
-                  {progress >= 99 || remainingTime === 'Encoding export...' ? 'ENCODING EXPORT CONTAINER' : 'RENDERING SMOOTHIE PIPELINE'}
+                  {#if isEncodingPhase}
+                    ENCODING EXPORT CONTAINER {encodingFrame > 0 ? `• FRAME ${encodingFrame.toLocaleString()} • ${encodingFps} FPS` : ''}
+                  {:else}
+                    RENDERING SMOOTHIE PIPELINE
+                  {/if}
                 </span>
                 <span class="pro-percent-hero">{progress}%</span>
               </div>
               <div class="pro-track">
-                <div class="pro-fill" style="width: {progress}%">
-                  <div class="pro-fill-head"></div>
-                </div>
-                {#if progress >= 99 || remainingTime === 'Encoding export...'}
+                <div class="pro-fill" style="width: {progress}%"></div>
+                {#if isEncodingPhase && progress < 100}
                   <div class="pro-fill-encoding"></div>
                 {/if}
               </div>
@@ -2462,93 +2495,26 @@
 
   .pro-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     padding-bottom: 2px;
-  }
-
-  .pro-title-group {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-  }
-
-  .pro-pulse-dot {
-    position: relative;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #ffffff;
-    flex-shrink: 0;
-  }
-
-  .pro-pulse-dot::after {
-    content: '';
-    position: absolute;
-    inset: -4px;
-    border-radius: 50%;
-    border: 1.5px solid rgba(255, 255, 255, 0.6);
-    animation: pulse-ring 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
-  }
-
-  .pro-pulse-dot.paused::after {
-    animation: none;
-    opacity: 0.2;
-  }
-
-  @keyframes pulse-ring {
-    0% { transform: scale(0.7); opacity: 1; }
-    100% { transform: scale(1.9); opacity: 0; }
-  }
-
-  .pro-file-icon {
-    color: #71717a;
-    flex-shrink: 0;
   }
 
   .pro-filename {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 13px;
-    font-weight: 600;
-    color: #f4f4f5;
-    letter-spacing: -0.01em;
+    font-weight: 700;
+    color: #ffffff;
     margin: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 480px;
-  }
-
-  .pro-engine-badge {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #e4e4e7;
-    background: #121216;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 4px 10px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-
-  .badge-accent {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: #22c55e;
-    box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
   }
 
   /* Pipeline Transformation Box */
   .pro-pipeline-box {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
     background: #0c0c0f;
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 8px;
@@ -2558,87 +2524,68 @@
   .pipeline-node {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
 
   .node-label {
     font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     color: #71717a;
   }
 
-  .node-val-group {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-  }
-
-  .node-res {
+  .node-val {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 12px;
     font-weight: 700;
-    color: #f4f4f5;
-  }
-
-  .node-fps {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    color: #a1a1aa;
-  }
-
-  .node-factor {
-    color: #71717a;
-    font-size: 10px;
+    color: #e4e4e7;
   }
 
   .pipeline-arrow {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #52525b;
+    color: #71717a;
     padding: 0 4px;
   }
 
   .pipeline-tags {
     margin-left: auto;
     display: flex;
-    gap: 8px;
+    gap: 6px;
   }
 
   .chip {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
-    font-weight: 600;
-    color: #d4d4d8;
-    background: #141418;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #a1a1aa;
+    background: #141417;
+    border: 1px solid #27272a;
     border-radius: 4px;
-    padding: 3px 9px;
+    padding: 3px 8px;
   }
 
-  /* Telemetry Grid */
+  /* Telemetry Grid (3 Balanced Columns) */
   .pro-telemetry-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
   }
 
   .telemetry-cell {
     background: #0c0c0f;
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 8px;
-    padding: 12px 14px;
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
   }
 
   .telemetry-label {
     font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     color: #71717a;
   }
 
@@ -2653,14 +2600,9 @@
 
   .telemetry-val.mono {
     font-family: 'IBM Plex Mono', monospace;
-    letter-spacing: 0.02em;
   }
 
   .telemetry-val.highlight {
-    color: #ffffff;
-  }
-
-  .telemetry-val.highlight-pct {
     color: #ffffff;
   }
 
@@ -2727,48 +2669,36 @@
 
   .pro-percent-hero {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 18px;
+    font-size: 14px;
     font-weight: 800;
     color: #ffffff;
-    letter-spacing: -0.02em;
   }
 
   .pro-track {
     position: relative;
     width: 100%;
-    height: 8px;
-    background: #141418;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
+    height: 6px;
+    background: #050507;
+    border: 1px solid #27272a;
+    border-radius: 4px;
     overflow: hidden;
   }
 
   .pro-fill {
-    position: relative;
     height: 100%;
     background: #ffffff;
-    border-radius: 5px;
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.35);
-    transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .pro-fill-head {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 4px;
-    background: #ffffff;
-    box-shadow: 0 0 8px #ffffff;
+    border-radius: 4px;
+    transition: width 0.15s linear;
   }
 
   .pro-fill-encoding {
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 35%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7) 50%, transparent);
-    animation: encoding-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, #ffffff 50%, transparent);
+    border-radius: 4px;
+    animation: encoding-sweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
 
   @keyframes encoding-sweep {

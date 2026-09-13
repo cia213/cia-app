@@ -149,8 +149,19 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
     command.extend(["-r", str(output_fps)])
     command.extend(audio_flags)
     command.extend(subtitle_flags)
-    command.extend(["-map_metadata", "-1", final_output])
-    run_command(command)
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"FFmpeg encoding failed with code {proc.returncode}")
     if os.path.exists(raw_interpolation):
         os.remove(raw_interpolation)
 
