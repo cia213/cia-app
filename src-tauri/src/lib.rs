@@ -341,7 +341,7 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map(|dir| dir.join("config.json"))
-        .map_err(|error| format!("Unable to resolve the cia app config directory: {error}"))
+        .map_err(|error| format!("Unable to resolve the cia render config directory: {error}"))
 }
 
 fn migrate_legacy_config(app: &tauri::AppHandle) {
@@ -366,12 +366,12 @@ fn migrate_legacy_config(app: &tauri::AppHandle) {
     }
     match fs::copy(&legacy_path, &new_path) {
         Ok(_) => println!(
-            "[cia app] Migrated config from {} to {}",
+            "[cia render] Migrated config from {} to {}",
             legacy_path.display(),
             new_path.display()
         ),
         Err(error) => eprintln!(
-            "[cia app] Config migration failed: {} -> {}: {error}",
+            "[cia render] Config migration failed: {} -> {}: {error}",
             legacy_path.display(),
             new_path.display()
         ),
@@ -438,7 +438,7 @@ fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), Stri
 
 fn write_config(app: &tauri::AppHandle, config: &RuntimeConfig) -> Result<(), String> {
     let path = config_path(app)?;
-    let parent = path.parent().ok_or("Invalid cia app config path")?;
+    let parent = path.parent().ok_or("Invalid cia render config path")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
 
@@ -510,7 +510,7 @@ fn rife_install_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|directory| directory.join("runtimes").join("rife"))
-        .map_err(|error| format!("Unable to resolve the cia app runtime directory: {error}"))
+        .map_err(|error| format!("Unable to resolve the cia render runtime directory: {error}"))
 }
 
 fn effective_rife_script(config: &RuntimeConfig, app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -651,7 +651,7 @@ fn snapshot_from_config(
         ),
         component_status(
             "rife_script",
-            "cia app RIFE script",
+            "cia render RIFE script",
             script.clone(),
             "Bundled script or explicit time_remap.py",
         ),
@@ -734,7 +734,7 @@ fn media_tools(config: &RuntimeConfig, app: &tauri::AppHandle) -> Result<MediaTo
     ) {
         (Some(ffmpeg), Some(ffprobe)) => Ok(MediaToolPaths { ffmpeg, ffprobe }),
         _ => bundled_media_tools(app).ok_or_else(|| {
-            "Bundled FFmpeg tools are unavailable. Reinstall cia app or configure Runtime paths."
+            "Bundled FFmpeg tools are unavailable. Reinstall cia render or configure Runtime paths."
                 .to_string()
         }),
     }
@@ -753,7 +753,7 @@ fn rife_runtime(
         return Err("RIFE model must point to flownet.pkl".to_string());
     }
     let script = effective_rife_script(config, app)
-        .ok_or("cia app RIFE script is unavailable. Reinstall the application or configure the script path.")?;
+        .ok_or("cia render RIFE script is unavailable. Reinstall the application or configure the script path.")?;
 
     Ok(RifeRuntimePaths {
         python: required_file(&config.rife.python_executable, "Python runtime")?,
@@ -782,7 +782,7 @@ fn smoothie_runtime(
                 .to_path_buf(),
         }),
         _ => bundled_smoothie_runtime(app, &media).ok_or_else(|| {
-            "Bundled Smoothie is unavailable. Reinstall cia app or configure Runtime paths."
+            "Bundled Smoothie is unavailable. Reinstall cia render or configure Runtime paths."
                 .to_string()
         }),
     }
@@ -1156,7 +1156,7 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
     if rife_runtime(&configured, &app).is_ok() {
         let _ = app.emit(
             "live-log",
-            "[cia app] A configured RIFE environment is already ready.",
+            "[cia render] A configured RIFE environment is already ready.",
         );
         return Ok(runtime_snapshot(&app));
     }
@@ -1169,21 +1169,21 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
         write_config(&app, &adopted)?;
         let _ = app.emit(
             "live-log",
-            "[cia app] A complete local RIFE runtime was detected and is now in use.",
+            "[cia render] A complete local RIFE runtime was detected and is now in use.",
         );
         return Ok(runtime_snapshot(&app));
     }
 
     let _ = app.emit(
         "live-log",
-        "[cia app] No complete local RIFE runtime was found. Installing the optional environment...",
+        "[cia render] No complete local RIFE runtime was found. Installing the optional environment...",
     );
     let bootstrap = bundled_resource(&app, "bootstrap/bootstrap-rife.ps1")
         .filter(|path| path.is_file())
-        .ok_or("The bundled RIFE installer script is missing. Reinstall cia app.")?;
+        .ok_or("The bundled RIFE installer script is missing. Reinstall cia render.")?;
     let python_installer = bundled_resource(&app, "bootstrap/python-3.11.9-amd64.exe")
         .filter(|path| path.is_file())
-        .ok_or("The bundled Python installer is missing. Reinstall cia app.")?;
+        .ok_or("The bundled Python installer is missing. Reinstall cia render.")?;
     let root = rife_install_root(&app)?;
     fs::create_dir_all(&root)
         .map_err(|error| format!("Unable to create {}: {error}", root.display()))?;
@@ -1234,7 +1234,7 @@ async fn install_rife_environment(app: tauri::AppHandle) -> Result<RuntimeSnapsh
             .unwrap_or_default();
         return if detail.is_empty() {
             Err(format!(
-                "RIFE environment installation failed ({status}). Review COPY LOGS for the exact step."
+                "RIFE environment installation failed ({status}). Review logs for the exact step."
             ))
         } else {
             Err(format!("RIFE environment installation failed: {detail}"))
@@ -1569,7 +1569,7 @@ pub fn run() {
             open_about_link
         ])
         .run(tauri::generate_context!())
-        .expect("error while running cia app");
+        .expect("error while running cia render");
 }
 
 #[cfg(test)]

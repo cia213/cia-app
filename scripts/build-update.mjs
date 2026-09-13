@@ -6,7 +6,7 @@ import os from 'os';
 const tauriConf = JSON.parse(fs.readFileSync(path.join('src-tauri', 'tauri.conf.json'), 'utf8'));
 const version = tauriConf.version;
 const keyPath = path.join(os.homedir(), '.tauri', 'cia-app.key');
-const installerPath = path.join('src-tauri', 'target', 'release', 'bundle', 'nsis', `cia app_${version}_x64-setup.exe`);
+const installerPath = path.join('src-tauri', 'target', 'release', 'bundle', 'nsis', `cia render_${version}_x64-setup.exe`);
 const sigPath = `${installerPath}.sig`;
 
 if (!fs.existsSync(installerPath)) {
@@ -34,12 +34,12 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia app v${version}\n- Integrated automatic delta update\n- Step-by-step progress during RIFE installation\n- Fail-fast GPU/CUDA validation\n- Updated application branding & icons`,
+  notes: `cia render v${version}\n- Integrated automatic delta update\n- Step-by-step progress during RIFE installation\n- Fail-fast GPU/CUDA validation\n- Updated application branding & icons`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
       signature: signature,
-      url: `https://github.com/cia213/cia-app/releases/download/v${version}/cia.app_${version}_x64-setup.exe`
+      url: `https://github.com/cia213/cia-app/releases/download/v${version}/cia.render_${version}_x64-setup.exe`
     }
   }
 };

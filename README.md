@@ -1,14 +1,14 @@
-# cia app
+# cia render
 
-cia app is a local Windows desktop app for two video operations:
+cia render is a local Windows desktop app for two video operations:
 
 - **RENDER** - smoothie-rs frame blending and render finishing.
 - **INTERPOLATION** - optional RIFE frame multiplication.
 
-Your media stays on the computer. cia app does not upload source videos or
+Your media stays on the computer. cia render does not upload source videos or
 silently fetch render engines.
 
-![cia app preview](docs/preview.png)
+![cia render preview](docs/preview.png)
 
 ## Getting started
 
@@ -42,6 +42,6 @@ redistributed.
 
 ## Licence and notices
 
-cia app source code is MIT licensed. Third-party software keeps its own
+cia render source code is MIT licensed. Third-party software keeps its own
 licence; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Nothing in this
 repository grants redistribution rights for an external runtime or model.

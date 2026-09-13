@@ -303,7 +303,6 @@
 
   let anyProcessing = $derived(isProcessing || isSmoothieProcessing);
   let canRenderSmoothie = $derived(Boolean(rifeOutputPath) && lastOutputPath === rifeOutputPath && !anyProcessing);
-  let canCopyLogs = $derived(Boolean(logs.length && shouldShowExecutionLogs));
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
   let smoothieSliderPct = $derived(((smoothieSettings.fps - 20) / (60 - 20)) * 100);
 
@@ -380,7 +379,7 @@
     try {
       await invoke(isRenderPaused ? 'resume_render' : 'pause_render', { jobId: activeRenderJobId });
       isRenderPaused = !isRenderPaused;
-      appendLog(`[cia app] RIFE ${isRenderPaused ? 'paused' : 'resumed'} by user`);
+      appendLog(`[cia render] RIFE ${isRenderPaused ? 'paused' : 'resumed'} by user`);
       showToast(isRenderPaused ? 'Interpolation paused' : 'Interpolation resumed', 'info');
     } catch (e) {
       showToast(`Unable to ${isRenderPaused ? 'resume' : 'pause'} interpolation: ${e}`, 'error');
@@ -393,7 +392,7 @@
     isCancellingRender = true;
     try {
       await invoke('cancel_render', { jobId: activeRenderJobId });
-      appendLog('[cia app] Cancellation requested by user');
+      appendLog('[cia render] Cancellation requested by user');
     } catch (e) {
       showToast(`Unable to cancel render: ${e}`, 'error');
       isCancellingRender = false;
@@ -576,7 +575,7 @@
     isRenderPaused = false;
     isCancellingRender = false;
     beginLogCapture();
-    appendLog('[cia app] RIFE 4.26 started');
+    appendLog('[cia render] RIFE 4.26 started');
     try {
       const outputPath = await invoke('run_time_remap', {
         jobId: activeRenderJobId,
@@ -590,14 +589,14 @@
       });
       rifeOutputPath = outputPath;
       lastOutputPath = outputPath;
-      appendLog(`[cia app] RIFE output verified: ${outputPath}`);
+      appendLog(`[cia render] RIFE output verified: ${outputPath}`);
 
       if (autoRender) {
         jobPhase = 'smoothie';
         isRenderPaused = false;
         const smoothiePath = await runSmoothieFor(outputPath, { preserveLogs: true, jobId: activeRenderJobId });
         lastOutputPath = smoothiePath;
-        appendLog(`[cia app] Smoothie output verified: ${smoothiePath}`);
+        appendLog(`[cia render] Smoothie output verified: ${smoothiePath}`);
       }
 
       progress = 100;
@@ -652,7 +651,7 @@
     try {
       const smoothiePath = await runSmoothieFor(rifeOutputPath, { preserveLogs: true, jobId: activeRenderJobId });
       lastOutputPath = smoothiePath;
-      appendLog(`[cia app] Smoothie output verified: ${smoothiePath}`);
+      appendLog(`[cia render] Smoothie output verified: ${smoothiePath}`);
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
@@ -726,7 +725,7 @@
   async function runSmoothieFor(inputPath, { preserveLogs = false, jobId = createRenderJobId() } = {}) {
     if (!preserveLogs) beginLogCapture();
     else resetTelemetry();
-    appendLog('[cia app] SMOOTHIE started');
+    appendLog('[cia render] SMOOTHIE started');
     return invoke('run_smoothie', {
       jobId,
       videoPath: inputPath,
@@ -786,7 +785,7 @@
     installTotal = 0;
     installLabel = '';
     beginLogCapture();
-    appendLog('[cia app] Checking for an available RIFE environment');
+    appendLog('[cia render] Checking for an available RIFE environment');
     try {
       runtimeSnapshot = await invoke('install_rife_environment');
       setupDraft = cloneConfig(runtimeSnapshot.config);
@@ -870,7 +869,7 @@
         availableUpdate = null;
         updateState = 'up-to-date';
         if (manual) {
-          showToast('cia app is up to date', 'success');
+          showToast('cia render is up to date', 'success');
         }
       }
     } catch (err) {
@@ -909,7 +908,7 @@
         }
       });
 
-      showToast('Update installed. Restarting cia app...', 'success');
+      showToast('Update installed. Restarting cia render...', 'success');
       await relaunch();
     } catch (err) {
       console.error('Update install failed:', err);
@@ -955,7 +954,7 @@
           </svg>
         </button>
       </div>
-      <span class="titlebar-text">cia app</span>
+      <span class="titlebar-text">cia render</span>
     </div>
     <div class="titlebar-controls">
       {#if availableUpdate}
@@ -963,7 +962,6 @@
           <span class="update-badge-dot"></span> UPDATE V{availableUpdate.version}
         </button>
       {/if}
-      <button class="titlebar-btn setup" onclick={() => showRuntimeSetup = true} aria-label="Open runtime repair">RUNTIME</button>
       <button class="titlebar-btn" onclick={() => appWindow?.minimize()} aria-label="Minimize" disabled={!appWindow}>-</button>
       <button class="titlebar-btn close" onclick={() => appWindow?.close()} aria-label="Close" disabled={!appWindow}>X</button>
     </div>
@@ -979,7 +977,7 @@
     <main class="runtime-setup" aria-labelledby="setup-title">
       <section class="setup-card">
         <header class="setup-header">
-            <span class="about-kicker">cia app / RUNTIME REPAIR</span>
+            <span class="about-kicker">cia render / RUNTIME REPAIR</span>
           <h1 id="setup-title">ADVANCED RUNTIME PATHS</h1>
           <p>RENDER works with the bundled Smoothie and media tools. Use this panel only to repair an installation or supply a custom RIFE runtime.</p>
         </header>
@@ -1015,7 +1013,7 @@
               <label for="setup-rife-model">RIFE MODEL</label>
               <div class="path-field"><input id="setup-rife-model" bind:value={setupDraft.rife.modelFile} placeholder="Select flownet.pkl" /><button onclick={() => browseRuntimePath('rife_model')}>BROWSE</button></div>
               <label for="setup-rife-script">RIFE SCRIPT OVERRIDE <span>(optional)</span></label>
-              <div class="path-field"><input id="setup-rife-script" bind:value={setupDraft.rife.script} placeholder="Bundled cia app script is used by default" /><button onclick={() => browseRuntimePath('rife_script')}>BROWSE</button></div>
+              <div class="path-field"><input id="setup-rife-script" bind:value={setupDraft.rife.script} placeholder="Bundled cia render script is used by default" /><button onclick={() => browseRuntimePath('rife_script')}>BROWSE</button></div>
             </section>
 
             <section>
@@ -1036,7 +1034,7 @@
           </div>
 
           <div class="setup-footer">
-            <span>Configuration is saved to your cia app app-data folder.</span>
+            <span>Configuration is saved to your cia render app-data folder.</span>
             <button class="btn-pro-primary" onclick={saveRuntimeSetup}>SAVE &amp; CONTINUE</button>
           </div>
         {/if}
@@ -1369,13 +1367,13 @@
     {:else if activePage === 'about'}
       <section class="about-page" aria-label="Project credits">
         <header class="about-identity">
-          <img class="about-app-logo" src={appLogo} alt="cia app logo" />
+          <img class="about-app-logo" src={appLogo} alt="cia render logo" />
           <div class="about-app-copy">
-            <h1>cia app <span>V{appVersion}</span></h1>
+            <h1>cia render <span>V{appVersion}</span></h1>
             <p>Local render workflow, credits and contact.</p>
           </div>
           <div class="about-contacts">
-            <button class="about-update-btn" onclick={() => checkForAppUpdates(true)} aria-label="Check for cia app updates" disabled={updateState === 'checking' || updateState === 'downloading'}>
+            <button class="about-update-btn" onclick={() => checkForAppUpdates(true)} aria-label="Check for cia render updates" disabled={updateState === 'checking' || updateState === 'downloading'}>
               {#if updateState === 'checking'}
                 <span>CHECKING...</span>
               {:else if availableUpdate}
@@ -1384,11 +1382,11 @@
                 <span>CHECK FOR UPDATES</span>
               {/if}
             </button>
-            <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia app Discord handle">
+            <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia render Discord handle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
               <span>{discordCopyFeedback ? 'COPIED' : 'cia2013'}</span>
             </button>
-            <button class="github-contact" onclick={() => openAboutLink(PROJECT_REPOSITORY_URL)} aria-label="Open cia app on GitHub">
+            <button class="github-contact" onclick={() => openAboutLink(PROJECT_REPOSITORY_URL)} aria-label="Open cia render on GitHub">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 8.4 22.9c.6.1.8-.3.8-.6v-2.2c-3.4.7-4.1-1.4-4.1-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.8.1-.8 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.3-.1-.3-.5-1.6.1-3.3 0 0 1-.3 3.3 1.2a11.3 11.3 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.7.2 3 .1 3.3.8.9 1.2 2 1.2 3.3 0 4.7-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5Z" /></svg>
             </button>
           </div>
@@ -1569,7 +1567,7 @@
         <div class="modal-body">
           <div class="update-version-banner">
             <span class="pro-dot active"></span>
-            <span>A new version of cia app is ready to install (current: V{appVersion})</span>
+            <span>A new version of cia render is ready to install (current: V{appVersion})</span>
           </div>
           {#if availableUpdate.body}
             <div class="update-notes-box">
@@ -1598,7 +1596,7 @@
           {:else if updateState === 'ready'}
             <div class="update-ready-box">
               <span class="pro-dot active"></span>
-              <span>UPDATE APPLIED - RESTARTING CIA APP...</span>
+              <span>UPDATE APPLIED - RESTARTING CIA RENDER...</span>
             </div>
           {:else if updateState === 'error'}
             <div class="setup-alert" style="margin-top: 14px;">{updateErrorMessage}</div>
@@ -1614,14 +1612,6 @@
         </div>
       </div>
     </div>
-  {/if}
-
-  {#if canCopyLogs}
-    <footer class="app-footer">
-      <button class="btn-copy" onclick={copyLogsToClipboard}>
-        {copyFeedback ? 'COPIED TO CLIPBOARD' : 'COPY LOGS'}
-      </button>
-    </footer>
   {/if}
 
   <!-- Toast Notification Overlay -->
@@ -1721,14 +1711,6 @@
 
   .titlebar-btn:hover { background: #1c1c20; color: #ffffff; }
   .titlebar-btn.close:hover { background: #dc2626; color: #ffffff; }
-  .titlebar-btn.setup {
-    width: auto;
-    padding: 0 8px;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-  }
 
   /* Navigation Tabs */
   .tab-bar {
@@ -2968,35 +2950,10 @@
   }
   .has-tooltip:hover::after { opacity: 1; visibility: visible; }
 
-  /* Footer */
-  .app-footer {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    height: 36px;
-    padding: 0 14px;
-    background: #08080a;
-    border-top: 1px solid #1c1c20;
-  }
-
-  .btn-copy {
-    background: #141417;
-    color: #e4e4e7;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 6px;
-    padding: 4px 12px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: all 0.15s ease;
-  }
-  .btn-copy:hover { border-color: rgba(255, 255, 255, 0.35); background: #1c1c20; }
-
   /* Toast Overlay */
   .toast {
     position: fixed;
-    bottom: 46px;
+    bottom: 14px;
     right: 14px;
     padding: 8px 14px;
     background: #121215;

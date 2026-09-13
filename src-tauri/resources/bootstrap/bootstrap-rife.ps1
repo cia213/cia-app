@@ -16,9 +16,9 @@ $GpuCheck = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($GpuCheck)) {
   throw "ERROR: No NVIDIA GPU detected (nvidia-smi returned: $GpuCheck). RIFE requires CUDA. Install aborted before any download."
 }
-Write-Output "cia app SETUP: NVIDIA GPU detected: $($GpuCheck.Trim())"
+Write-Output "cia render SETUP: NVIDIA GPU detected: $($GpuCheck.Trim())"
 
-# This script only writes below RuntimeRoot, which cia app resolves inside its
+# This script only writes below RuntimeRoot, which cia render resolves inside its
 # per-user application data. Nothing is installed system-wide or added to PATH.
 $PythonHome = Join-Path $RuntimeRoot 'python'
 $VenvRoot = Join-Path $RuntimeRoot 'venv'
@@ -28,7 +28,7 @@ $Staging = Join-Path $RuntimeRoot '.download-staging'
 $ExpectedModelHash = '45C7F74156704769DC9F85CFCAF8552E1E926F9399DCFA3A553DEE88FAC6F53F'
 
 function Write-Step([string]$Message) {
-  Write-Output "cia app SETUP: $Message"
+  Write-Output "cia render SETUP: $Message"
 }
 
 function Assert-ExitCode([string]$Step) {
