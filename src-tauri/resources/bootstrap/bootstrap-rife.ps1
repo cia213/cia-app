@@ -99,27 +99,33 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'inference_video.py') -
 Write-Output 'CIA_PROGRESS step=7 total=7 label=Downloading RIFE 4.26 model'
 if (-not (Test-Path -LiteralPath $ModelTarget -PathType Leaf)) {
   Write-Step 'Downloading the official RIFE 4.26 model...'
-  $ModelDownload = Join-Path $Staging 'rife-4.26-model.download'
+  $ModelZip = Join-Path $Staging 'rife-4.26-model.zip'
   Invoke-WebRequest -UseBasicParsing `
     -Uri 'https://drive.usercontent.google.com/download?id=1gViYvvQrtETBgU1w8axZSsr7YUuw31uy&export=download&confirm=t' `
-    -OutFile $ModelDownload
-  if ((Get-Item -LiteralPath $ModelDownload).Length -lt 1000000) {
+    -OutFile $ModelZip
+  if ((Get-Item -LiteralPath $ModelZip).Length -lt 1000000) {
     throw 'The RIFE model download was unexpectedly small; Google Drive did not return the model archive.'
   }
   $ModelDirectory = Split-Path -Parent $ModelTarget
   New-Item -ItemType Directory -Force -Path $ModelDirectory | Out-Null
-  $Header = [System.IO.File]::ReadAllBytes($ModelDownload)[0..1]
+  $Header = [System.IO.File]::ReadAllBytes($ModelZip)[0..1]
   if ($Header[0] -eq 80 -and $Header[1] -eq 75) {
     $ModelExtract = Join-Path $Staging 'model'
-    Expand-Archive -LiteralPath $ModelDownload -DestinationPath $ModelExtract -Force
+    if (Test-Path -LiteralPath $ModelExtract) {
+      Remove-Item -LiteralPath $ModelExtract -Recurse -Force
+    }
+    Expand-Archive -LiteralPath $ModelZip -DestinationPath $ModelExtract -Force
     $ModelSource = Get-ChildItem -LiteralPath $ModelExtract -Recurse -Filter 'flownet.pkl' -File |
       Select-Object -First 1
     if ($null -eq $ModelSource) {
       throw 'The RIFE model archive did not contain flownet.pkl.'
     }
-    Copy-Item -LiteralPath $ModelSource.FullName -Destination $ModelTarget -Force
+    $SourceDir = Split-Path -Parent $ModelSource.FullName
+    Get-ChildItem -LiteralPath $SourceDir -File | ForEach-Object {
+      Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $ModelDirectory $_.Name) -Force
+    }
   } else {
-    Copy-Item -LiteralPath $ModelDownload -Destination $ModelTarget -Force
+    Copy-Item -LiteralPath $ModelZip -Destination $ModelTarget -Force
   }
 }
 
