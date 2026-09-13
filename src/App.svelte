@@ -167,6 +167,89 @@
   let smoothieInfo = $state(null);
   let smoothieOutputPath = $state('');
 
+  // --- Browser-like Navigation History ---
+  let historyStack = $state([
+    { page: 'smoothie', smoothiePath: '', videoPath: '' }
+  ]);
+  let historyIndex = $state(0);
+  let canGoBack = $derived(historyIndex > 0);
+  let canGoForward = $derived(historyIndex < historyStack.length - 1);
+
+  function pushNavigation(entry) {
+    const current = historyStack[historyIndex];
+    if (
+      current &&
+      current.page === entry.page &&
+      current.smoothiePath === entry.smoothiePath &&
+      current.videoPath === entry.videoPath
+    ) {
+      return;
+    }
+    historyStack = [...historyStack.slice(0, historyIndex + 1), entry];
+    historyIndex = historyStack.length - 1;
+  }
+
+  function handleGoBack() {
+    if (!canGoBack) return;
+    historyIndex -= 1;
+    applyHistoryEntry(historyStack[historyIndex]);
+  }
+
+  function handleGoForward() {
+    if (!canGoForward) return;
+    historyIndex += 1;
+    applyHistoryEntry(historyStack[historyIndex]);
+  }
+
+  async function applyHistoryEntry(entry) {
+    if (!entry) return;
+    activePage = entry.page;
+
+    // Synchronize Smoothie State
+    if (!entry.smoothiePath) {
+      smoothiePath = '';
+      smoothieInfo = null;
+      isSmoothieLoading = false;
+      isSmoothieProcessing = false;
+    } else if (smoothiePath !== entry.smoothiePath) {
+      await loadSmoothie(entry.smoothiePath, false);
+    }
+
+    // Synchronize RIFE State
+    if (!entry.videoPath) {
+      videoPath = '';
+      videoInfo = null;
+      isLoading = false;
+      isProcessing = false;
+    } else if (videoPath !== entry.videoPath) {
+      await loadVideo(entry.videoPath, false);
+    }
+  }
+
+  function handleNavKeyDown(event) {
+    if (event.altKey && event.key === 'ArrowLeft') {
+      event.preventDefault();
+      handleGoBack();
+    } else if (event.altKey && event.key === 'ArrowRight') {
+      event.preventDefault();
+      handleGoForward();
+    }
+  }
+
+  function clearSmoothieSelection(resetComplete = false) {
+    smoothiePath = '';
+    smoothieInfo = null;
+    if (resetComplete) isSmoothieComplete = false;
+    pushNavigation({ page: 'smoothie', smoothiePath: '', videoPath });
+  }
+
+  function clearVideoSelection() {
+    videoPath = '';
+    videoInfo = null;
+    isComplete = false;
+    pushNavigation({ page: 'dashboard', smoothiePath, videoPath: '' });
+  }
+
   const DEFAULT_SMOOTHIE = {
     fps: 30,
     blendIntensity: 1.0,
@@ -359,7 +442,10 @@
   }
 
   function navigateTo(page) {
-    if (activePage !== page) activePage = page;
+    if (activePage !== page) {
+      activePage = page;
+      pushNavigation({ page, smoothiePath, videoPath });
+    }
   }
 
   $effect(() => {
@@ -384,7 +470,7 @@
   });
 
   // --- RIFE Handlers ---
-  async function loadVideo(path) {
+  async function loadVideo(path, pushNav = true) {
     videoPath = path;
     isLoading = true;
     isComplete = false;
@@ -396,6 +482,9 @@
     try {
       videoInfo = await invoke('analyze_video', { videoPath: path });
       showToast(`Loaded ${videoInfo.width}x${videoInfo.height} @ ${videoInfo.fps.toFixed(2)} FPS`, 'success');
+      if (pushNav) {
+        pushNavigation({ page: 'dashboard', smoothiePath, videoPath: path });
+      }
     } catch (e) {
       showToast(`Error: ${e}`, 'error');
       videoPath = '';
@@ -530,7 +619,7 @@
   }
 
   // --- Smoothie Handlers ---
-  async function loadSmoothie(path) {
+  async function loadSmoothie(path, pushNav = true) {
     smoothiePath = path;
     isSmoothieLoading = true;
     isSmoothieComplete = false;
@@ -539,6 +628,9 @@
     try {
       smoothieInfo = await invoke('analyze_video', { videoPath: path });
       showToast(`Loaded ${smoothieInfo.width}x${smoothieInfo.height} @ ${smoothieInfo.fps.toFixed(2)} FPS`, 'success');
+      if (pushNav) {
+        pushNavigation({ page: 'smoothie', smoothiePath: path, videoPath });
+      }
     } catch (e) {
       showToast(`Error: ${e}`, 'error');
       smoothiePath = '';
@@ -768,10 +860,36 @@
   });
 </script>
 
+<svelte:window onkeydown={handleNavKeyDown} />
+
 <div class="app-root" class:dragging={isDragging}>
   <!-- Custom Windows Titlebar -->
   <div class="titlebar" data-tauri-drag-region>
     <div class="titlebar-brand">
+      <div class="nav-arrows" data-tauri-drag-region="false">
+        <button
+          class="nav-arrow-btn"
+          onclick={handleGoBack}
+          disabled={!canGoBack}
+          aria-label="Previous page"
+          title="Précédent"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 12H5M12 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <button
+          class="nav-arrow-btn"
+          onclick={handleGoForward}
+          disabled={!canGoForward}
+          aria-label="Next page"
+          title="Suivant"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14M12 5l7 7-7 7" />
+          </svg>
+        </button>
+      </div>
       <span class="titlebar-text">cia app</span>
     </div>
     <div class="titlebar-controls">
@@ -896,7 +1014,15 @@
         </section>
       {:else if !videoPath}
         <div class="drop-zone" class:dragging={isDragging} onclick={pickFile} onkeydown={(event) => activateOnKeyboard(event, pickFile)} role="button" tabindex="0">
-          <p>DRAG VIDEO</p>
+          <div class="drop-center-content">
+            <div class="drop-icon-box">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
+              </svg>
+            </div>
+            <span class="drop-prompt-label">DRAG SCENE</span>
+          </div>
         </div>
       {:else if isLoading}
         <div class="loading-state"><p>ANALYZING VIDEO MATRIX...</p></div>
@@ -905,21 +1031,38 @@
           <div class="pro-render-card">
             <header class="pro-header">
               <div class="pro-title-group">
-                <span class="pro-dot active"></span>
-                <h3 class="pro-filename">{videoPath.split(/[\\/]/).pop()}</h3>
+                <span class="pro-pulse-dot" class:paused={isRenderPaused} aria-hidden="true"></span>
+                <svg class="pro-file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
+                </svg>
+                <h3 class="pro-filename" title={videoPath.split(/[\\/]/).pop()}>{videoPath.split(/[\\/]/).pop()}</h3>
               </div>
-              <span class="pro-engine-badge">{jobPhase === 'smoothie' ? 'SMOOTHIE-RS ENGINE' : 'RIFE 4.26 ENGINE'}</span>
+              <span class="pro-engine-badge">
+                <span class="badge-accent"></span>
+                {jobPhase === 'smoothie' ? 'SMOOTHIE-RS ENGINE' : 'RIFE 4.26 ENGINE'}
+              </span>
             </header>
 
             <div class="pro-pipeline-box">
               <div class="pipeline-node">
                 <span class="node-label">INPUT</span>
-                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {videoInfo.fps.toFixed(0)} FPS</span>
+                <div class="node-val-group">
+                  <span class="node-res">{videoInfo.width}×{videoInfo.height}</span>
+                  <span class="node-fps">@{videoInfo.fps.toFixed(0)} FPS</span>
+                </div>
               </div>
-              <div class="pipeline-arrow">-&gt;</div>
+              <div class="pipeline-arrow" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 12h14M12 5l7 7-7 7" />
+                </svg>
+              </div>
               <div class="pipeline-node">
                 <span class="node-label">OUTPUT</span>
-                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {outputFps.toFixed(0)} FPS ({rifeSettings.factor}x)</span>
+                <div class="node-val-group">
+                  <span class="node-res">{videoInfo.width}×{videoInfo.height}</span>
+                  <span class="node-fps">@{outputFps.toFixed(0)} FPS <span class="node-factor">({rifeSettings.factor}x)</span></span>
+                </div>
               </div>
               <div class="pipeline-tags">
                 <span class="chip">H.264 CRF {rifeSettings.crf}</span>
@@ -948,24 +1091,27 @@
               </div>
               <div class="telemetry-cell">
                 <span class="telemetry-label">PROGRESS</span>
-                <span class="telemetry-val mono">{progress}%</span>
+                <span class="telemetry-val mono highlight-pct">{progress}%</span>
               </div>
             </div>
 
-            <div class="pro-progress-row">
+            <div class="pro-progress-card">
+              <div class="pro-progress-header">
+                <span class="progress-stage-name">
+                  {progress >= 99 || remainingTime === 'Encoding export...' ? 'ENCODING EXPORT CONTAINER' : 'INTERPOLATING FRAMES'}
+                </span>
+                <span class="pro-percent-hero">{progress}%</span>
+              </div>
               <div class="pro-track">
-                <div class="pro-fill" style="width: {progress}%"></div>
-              </div>
-              <span class="pro-percent-readout">{progress}%</span>
-            </div>
-            {#if progress >= 99 || remainingTime === 'Encoding export...'}
-              <div class="pro-progress-row">
-                <div class="pro-track">
-                  <div class="pro-fill-encoding"></div>
+                <div class="pro-fill" style="width: {progress}%">
+                  <div class="pro-fill-head"></div>
                 </div>
-                <span class="pro-percent-readout encoding-label">ENCODING</span>
+                {#if progress >= 99 || remainingTime === 'Encoding export...'}
+                  <div class="pro-fill-encoding"></div>
+                {/if}
               </div>
-            {/if}
+            </div>
+
             <div class="render-control-row">
               {#if jobPhase === 'rife'}
                 <button class="btn-pro-secondary" onclick={toggleRenderPause} disabled={isCancellingRender}>
@@ -1005,7 +1151,7 @@
               <div class="info-row"><span>Resolution</span><span>{videoInfo.width} x {videoInfo.height}</span></div>
               <div class="info-row"><span>Source FPS</span><span>{videoInfo.fps.toFixed(2)}</span></div>
               <div class="info-row"><span>Duration</span><span>{videoInfo.duration.toFixed(2)}s</span></div>
-              <button class="btn-secondary" onclick={() => { videoPath = ''; videoInfo = null; }}>CHANGE VIDEO</button>
+              <button class="btn-secondary" onclick={clearVideoSelection}>CHANGE VIDEO</button>
             </div>
 
             <!-- Quick Action Card -->
@@ -1040,7 +1186,15 @@
     {:else if activePage === 'smoothie'}
       {#if !smoothiePath}
         <div class="drop-zone" class:dragging={isDragging} onclick={pickSmoothieFile} onkeydown={(event) => activateOnKeyboard(event, pickSmoothieFile)} role="button" tabindex="0">
-          <p>DRAG VIDEO</p>
+          <div class="drop-center-content">
+            <div class="drop-icon-box">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
+              </svg>
+            </div>
+            <span class="drop-prompt-label">DRAG SCENE</span>
+          </div>
         </div>
       {:else if isSmoothieLoading}
         <div class="loading-state"><p>ANALYZING VIDEO MATRIX...</p></div>
@@ -1049,21 +1203,38 @@
           <div class="pro-render-card">
             <header class="pro-header">
               <div class="pro-title-group">
-                <span class="pro-dot active"></span>
-                <h3 class="pro-filename">{smoothiePath.split(/[\\/]/).pop()}</h3>
+                <span class="pro-pulse-dot" aria-hidden="true"></span>
+                <svg class="pro-file-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
+                </svg>
+                <h3 class="pro-filename" title={smoothiePath.split(/[\\/]/).pop()}>{smoothiePath.split(/[\\/]/).pop()}</h3>
               </div>
-              <span class="pro-engine-badge">SMOOTHIE-RS ENGINE</span>
+              <span class="pro-engine-badge">
+                <span class="badge-accent"></span>
+                SMOOTHIE-RS ENGINE
+              </span>
             </header>
 
             <div class="pro-pipeline-box">
               <div class="pipeline-node">
                 <span class="node-label">INPUT</span>
-                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieInfo.fps.toFixed(0)} FPS</span>
+                <div class="node-val-group">
+                  <span class="node-res">{smoothieInfo.width}×{smoothieInfo.height}</span>
+                  <span class="node-fps">@{smoothieInfo.fps.toFixed(0)} FPS</span>
+                </div>
               </div>
-              <div class="pipeline-arrow">-&gt;</div>
+              <div class="pipeline-arrow" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 12h14M12 5l7 7-7 7" />
+                </svg>
+              </div>
               <div class="pipeline-node">
                 <span class="node-label">OUTPUT</span>
-                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieSettings.fps} FPS</span>
+                <div class="node-val-group">
+                  <span class="node-res">{smoothieInfo.width}×{smoothieInfo.height}</span>
+                  <span class="node-fps">@{smoothieSettings.fps} FPS</span>
+                </div>
               </div>
               <div class="pipeline-tags">
                 <span class="chip">LUT: {smoothieSettings.lutEnabled === 'yes' ? 'ON' : 'OFF'}</span>
@@ -1088,24 +1259,32 @@
               </div>
               <div class="telemetry-cell">
                 <span class="telemetry-label">PROGRESS</span>
-                <span class="telemetry-val mono">{progress}%</span>
+                <span class="telemetry-val mono highlight-pct">{progress}%</span>
               </div>
             </div>
 
-            <div class="pro-progress-row">
+            <div class="pro-progress-card">
+              <div class="pro-progress-header">
+                <span class="progress-stage-name">
+                  {progress >= 99 || remainingTime === 'Encoding export...' ? 'ENCODING EXPORT CONTAINER' : 'RENDERING SMOOTHIE PIPELINE'}
+                </span>
+                <span class="pro-percent-hero">{progress}%</span>
+              </div>
               <div class="pro-track">
-                <div class="pro-fill" style="width: {progress}%"></div>
-              </div>
-              <span class="pro-percent-readout">{progress}%</span>
-            </div>
-            {#if progress >= 99 || remainingTime === 'Encoding export...'}
-              <div class="pro-progress-row">
-                <div class="pro-track">
-                  <div class="pro-fill-encoding"></div>
+                <div class="pro-fill" style="width: {progress}%">
+                  <div class="pro-fill-head"></div>
                 </div>
-                <span class="pro-percent-readout encoding-label">ENCODING</span>
+                {#if progress >= 99 || remainingTime === 'Encoding export...'}
+                  <div class="pro-fill-encoding"></div>
+                {/if}
               </div>
-            {/if}
+            </div>
+
+            <div class="render-control-row">
+              <button class="btn-pro-secondary danger-action" onclick={() => showRenderCancelConfirmation = true} disabled={isCancellingRender}>
+                {isCancellingRender ? 'CANCELLING...' : 'CANCEL RENDER'}
+              </button>
+            </div>
           </div>
         {:else if isSmoothieComplete}
           <div class="pro-complete-card">
@@ -1117,7 +1296,7 @@
             <div class="complete-actions-row">
               <button class="btn-pro-secondary" onclick={openSmoothieFile}>OPEN FILE</button>
               <button class="btn-pro-secondary" onclick={openSmoothieFolder}>REVEAL IN EXPLORER</button>
-              <button class="btn-pro-secondary" onclick={() => { smoothiePath = ''; smoothieInfo = null; isSmoothieComplete = false; }}>NEW RENDER</button>
+              <button class="btn-pro-secondary" onclick={() => clearSmoothieSelection(true)}>NEW RENDER</button>
             </div>
           </div>
         {:else}
@@ -1129,7 +1308,7 @@
               <div class="info-row"><span>Resolution</span><span>{smoothieInfo.width} x {smoothieInfo.height}</span></div>
               <div class="info-row"><span>Source FPS</span><span>{smoothieInfo.fps.toFixed(2)}</span></div>
               <div class="info-row"><span>Duration</span><span>{smoothieInfo.duration.toFixed(2)}s</span></div>
-              <button class="btn-secondary" onclick={() => { smoothiePath = ''; smoothieInfo = null; }}>CHANGE VIDEO</button>
+              <button class="btn-secondary" onclick={() => clearSmoothieSelection(false)}>CHANGE VIDEO</button>
             </div>
 
             <!-- Quick Action Card -->
@@ -1459,6 +1638,36 @@
   }
 
   .titlebar-brand { display: flex; align-items: center; }
+  .nav-arrows {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-right: 10px;
+    -webkit-app-region: no-drag;
+  }
+  .nav-arrow-btn {
+    width: 22px;
+    height: 22px;
+    border: none;
+    background: transparent;
+    color: #71717a;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .nav-arrow-btn:hover:not(:disabled) {
+    background: #1c1c20;
+    color: #ffffff;
+  }
+  .nav-arrow-btn:disabled {
+    opacity: 0.2;
+    cursor: default;
+    pointer-events: none;
+  }
   .titlebar-text { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #71717a; }
   .titlebar-controls { display: flex; gap: 2px; }
 
@@ -1935,7 +2144,7 @@
     .about-contacts { align-self: center; }
   }
 
-  /* Drop Zone */
+  /* Drop Zone Screen 1 Card */
   .drop-zone {
     display: flex;
     flex-direction: column;
@@ -1943,25 +2152,58 @@
     justify-content: center;
     height: 100%;
     min-height: 380px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 8px;
-    background: #09090c;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    background: #08080a;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .drop-zone:hover {
-    border-color: rgba(255, 255, 255, 0.4);
-    background: #111116;
-    box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.02);
+    border-color: rgba(255, 255, 255, 0.25);
+    background: #0d0d10;
   }
 
-  .drop-zone p {
-    font-size: 16px;
+  .drop-zone.dragging {
+    border-color: rgba(255, 255, 255, 0.5);
+    background: #111115;
+  }
+
+  .drop-center-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .drop-icon-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.25);
+    transition: color 0.2s ease, transform 0.2s ease;
+  }
+
+  .drop-zone:hover .drop-icon-box {
+    color: rgba(255, 255, 255, 0.45);
+    transform: scale(1.04);
+  }
+
+  .drop-prompt-label {
+    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    margin: 0 0 6px;
-    color: #e4e4e7;
+    letter-spacing: 0.06em;
+    color: #f4f4f5;
+    text-transform: uppercase;
+    transition: color 0.2s ease;
+  }
+
+  .drop-zone:hover .drop-prompt-label {
+    color: #ffffff;
   }
 
   .loading-state {
@@ -2205,133 +2447,198 @@
     background: #1c1c20;
   }
 
-  /* Professional Render Card (Industrial Telemetry Layout) */
+  /* Professional Render Card (Industrial Telemetry Workstation) */
   .pro-render-card {
-    background: #09090c;
-    border: 1px solid #1c1c20;
-    border-radius: 8px;
-    padding: 18px;
+    background: #08080a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 20px 22px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
     height: 100%;
     min-height: 380px;
-    justify-content: space-between;
   }
 
   .pro-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding-bottom: 2px;
   }
 
   .pro-title-group {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    min-width: 0;
   }
 
-  .pro-dot {
+  .pro-pulse-dot {
+    position: relative;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #71717a;
+    background: #ffffff;
+    flex-shrink: 0;
   }
-  .pro-dot.active { background: #ffffff; box-shadow: 0 0 6px rgba(255, 255, 255, 0.4); }
+
+  .pro-pulse-dot::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.6);
+    animation: pulse-ring 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+  }
+
+  .pro-pulse-dot.paused::after {
+    animation: none;
+    opacity: 0.2;
+  }
+
+  @keyframes pulse-ring {
+    0% { transform: scale(0.7); opacity: 1; }
+    100% { transform: scale(1.9); opacity: 0; }
+  }
+
+  .pro-file-icon {
+    color: #71717a;
+    flex-shrink: 0;
+  }
 
   .pro-filename {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 13px;
-    font-weight: 700;
-    color: #ffffff;
+    font-weight: 600;
+    color: #f4f4f5;
+    letter-spacing: -0.01em;
     margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 480px;
   }
 
   .pro-engine-badge {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
-    border-radius: 4px;
-    padding: 3px 8px;
+    letter-spacing: 0.08em;
+    color: #e4e4e7;
+    background: #121216;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 4px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .badge-accent {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #22c55e;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
   }
 
   /* Pipeline Transformation Box */
   .pro-pipeline-box {
     display: flex;
     align-items: center;
-    gap: 14px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
+    gap: 16px;
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
     padding: 12px 16px;
   }
 
   .pipeline-node {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
   }
 
   .node-label {
     font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     color: #71717a;
   }
 
-  .node-val {
+  .node-val-group {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .node-res {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 12px;
     font-weight: 700;
-    color: #e4e4e7;
+    color: #f4f4f5;
+  }
+
+  .node-fps {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: #a1a1aa;
+  }
+
+  .node-factor {
+    color: #71717a;
+    font-size: 10px;
   }
 
   .pipeline-arrow {
-    color: #71717a;
-    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #52525b;
+    padding: 0 4px;
   }
 
   .pipeline-tags {
     margin-left: auto;
     display: flex;
-    gap: 6px;
+    gap: 8px;
   }
 
   .chip {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
-    color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
+    font-weight: 600;
+    color: #d4d4d8;
+    background: #141418;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
-    padding: 3px 8px;
+    padding: 3px 9px;
   }
 
   /* Telemetry Grid */
   .pro-telemetry-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    padding: 14px 16px;
+    gap: 10px;
   }
 
   .telemetry-cell {
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    padding: 12px 14px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
   }
 
   .telemetry-label {
     font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     color: #71717a;
   }
 
@@ -2339,10 +2646,22 @@
     font-size: 13px;
     font-weight: 700;
     color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .telemetry-val.mono {
     font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.02em;
+  }
+
+  .telemetry-val.highlight {
+    color: #ffffff;
+  }
+
+  .telemetry-val.highlight-pct {
+    color: #ffffff;
   }
 
   .auto-render-toggle {
@@ -2381,46 +2700,75 @@
   .auto-render-toggle input:checked::before { transform: scale(1); }
   .auto-render-toggle:hover { color: #ffffff; }
 
-  .telemetry-val.highlight {
+  /* Hero Progress Card */
+  .pro-progress-card {
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .pro-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .progress-stage-name {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #a1a1aa;
+    text-transform: uppercase;
+  }
+
+  .pro-percent-hero {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 18px;
+    font-weight: 800;
     color: #ffffff;
-  }
-
-  /* Integrated Progress Row */
-  .pro-progress-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-  }
-
-  .render-control-row {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 18px;
+    letter-spacing: -0.02em;
   }
 
   .pro-track {
-    flex: 1;
-    height: 6px;
-    background: #050507;
-    border: 1px solid #27272a;
-    border-radius: 4px;
+    position: relative;
+    width: 100%;
+    height: 8px;
+    background: #141418;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
     overflow: hidden;
   }
 
   .pro-fill {
+    position: relative;
     height: 100%;
     background: #ffffff;
-    border-radius: 4px;
-    transition: width 0.15s linear;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.35);
+    transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .pro-fill-head {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: #ffffff;
+    box-shadow: 0 0 8px #ffffff;
   }
 
   .pro-fill-encoding {
-    height: 100%;
-    width: 40%;
-    background: linear-gradient(90deg, transparent, #ffffff 50%, transparent);
-    border-radius: 4px;
-    animation: encoding-sweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 35%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7) 50%, transparent);
+    animation: encoding-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
 
   @keyframes encoding-sweep {
@@ -2428,21 +2776,13 @@
     100% { transform: translateX(350%); }
   }
 
-  .pro-percent-readout {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 14px;
-    font-weight: 800;
-    color: #ffffff;
-    min-width: 48px;
-    text-align: right;
-  }
-
-  .encoding-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #a1a1aa;
-    min-width: 80px;
+  .render-control-row {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+    margin-top: auto;
+    padding-top: 6px;
   }
 
   /* Professional Complete Card */
