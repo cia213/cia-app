@@ -8,6 +8,24 @@ cia render is a local Windows desktop app for two video operations:
 Your media stays on the computer. cia render does not upload source videos or
 silently fetch render engines.
 
+## Render Preview
+
+<table>
+  <tr>
+    <td align="center" width="100%">
+      <a href="https://www.youtube.com/watch?v=8plMwxkAvlA">
+        <img src="https://img.youtube.com/vi/8plMwxkAvlA/maxresdefault.jpg" width="100%" alt="cia render preview video">
+      </a>
+      <br>
+      <sub><a href="https://www.youtube.com/watch?v=8plMwxkAvlA">Watch on YouTube</a> &bull; <a href="https://github.com/cia213/cia-app/releases/download/v1.1.0/preview.mp4">Direct Link: preview.mp4 (191 MB)</a></sub>
+    </td>
+  </tr>
+</table>
+
+---
+
+## UX
+
 ![cia render preview](docs/preview.png)
 
 ## Getting started
