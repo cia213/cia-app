@@ -1084,7 +1084,7 @@
                 <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
               </svg>
             </div>
-            <span class="drop-prompt-label">DRAG SCENE</span>
+            <span class="drop-prompt-label">DRAG CLIP</span>
           </div>
         </div>
       {:else if isLoading}
@@ -1241,7 +1241,7 @@
                 <path d="M7 4v16M17 4v16M2 12h20M2 8h5M2 16h5M17 8h5M17 16h5" />
               </svg>
             </div>
-            <span class="drop-prompt-label">DRAG SCENE</span>
+            <span class="drop-prompt-label">DRAG CLIP</span>
           </div>
         </div>
       {:else if isSmoothieLoading}
@@ -1710,7 +1710,7 @@
   }
 
   .titlebar-btn:hover { background: #1c1c20; color: #ffffff; }
-  .titlebar-btn.close:hover { background: #dc2626; color: #ffffff; }
+  .titlebar-btn.close:hover { background: #1c1c20; color: #ffffff; border-color: #ffffff; }
 
   /* Navigation Tabs */
   .tab-bar {
@@ -1824,7 +1824,11 @@
     font-size: 11px;
   }
 
-  .setup-alert { border-color: #7f1d1d; color: #fecaca; }
+  .setup-alert {
+    background: #000000;
+    border-color: #ffffff;
+    color: #ffffff;
+  }
 
   .setup-status-grid {
     display: grid;
@@ -1845,7 +1849,7 @@
   }
 
   .setup-status-item strong {
-    color: #fca5a5;
+    color: #a1a1aa;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 9px;
   }
@@ -2794,8 +2798,9 @@
   }
 
   .danger-action:hover {
-    border-color: #fca5a5;
-    color: #fecaca;
+    background: #18181b;
+    border-color: #ffffff;
+    color: #ffffff;
   }
 
   /* Modal Settings Overlay Drawer */
@@ -2916,16 +2921,21 @@
   .confirmation-copy p:last-child { margin-bottom: 0; }
   .btn-danger-modal {
     padding: 8px 18px;
-    border: 1px solid #7f1d1d;
+    border: 1px solid #ffffff;
     border-radius: 6px;
-    background: #450a0a;
-    color: #fecaca;
+    background: #000000;
+    color: #ffffff;
     cursor: pointer;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.04em;
+    transition: all 0.15s ease;
   }
-  .btn-danger-modal:hover { background: #7f1d1d; color: #fff; }
+  .btn-danger-modal:hover {
+    background: #18181b;
+    border-color: #ffffff;
+    color: #ffffff;
+  }
 
   /* Tooltip System */
   .has-tooltip { position: relative; cursor: help; }
@@ -2970,9 +2980,9 @@
   .titlebar-btn.update-badge {
     width: auto;
     padding: 0 8px;
-    background: rgba(34, 197, 94, 0.15);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.3);
+    background: #000000;
+    color: #ffffff;
+    border: 1px solid #ffffff;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 9px;
     font-weight: 700;
@@ -2980,18 +2990,19 @@
     display: flex;
     align-items: center;
     gap: 5px;
+    transition: background-color 150ms ease, border-color 150ms ease;
   }
   .titlebar-btn.update-badge:hover {
-    background: rgba(34, 197, 94, 0.25);
-    border-color: #4ade80;
+    background: #18181b;
+    border-color: #ffffff;
     color: #ffffff;
   }
   .update-badge-dot {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: #4ade80;
-    box-shadow: 0 0 6px #4ade80;
+    background: #ffffff;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.6);
   }
 
   .about-update-btn {
@@ -2999,10 +3010,10 @@
     align-items: center;
     gap: 7px;
     padding: 8px 10px;
-    border: 1px solid #27272a;
+    border: 1px solid #ffffff;
     border-radius: 5px;
-    background: #0d0d10;
-    color: #d4d4d8;
+    background: #000000;
+    color: #ffffff;
     cursor: pointer;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
@@ -3012,7 +3023,7 @@
   }
   .about-update-btn:hover:not(:disabled) {
     background: #18181b;
-    border-color: #52525b;
+    border-color: #ffffff;
     color: #ffffff;
   }
   .about-update-btn:disabled {
@@ -3023,7 +3034,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #4ade80;
+    color: #ffffff;
   }
 
   .update-modal-card {
@@ -3086,10 +3097,10 @@
     align-items: center;
     gap: 8px;
     padding: 12px;
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.3);
+    background: #000000;
+    border: 1px solid #ffffff;
     border-radius: 6px;
-    color: #4ade80;
+    color: #ffffff;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 11px;
     font-weight: 700;

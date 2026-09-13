@@ -34,7 +34,7 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia render v${version}\n- Rebranding to cia render\n- Real-time video encoding progress telemetry and ETA\n- Streamlined titlebar and interface controls\n- Restored clean workstation typography`,
+  notes: `cia render v${version}\n- Restored clean workstation update styling (black background, white border, white text)\n- Renamed drop prompt to DRAG CLIP\n- Real-time video encoding progress telemetry and ETA`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
