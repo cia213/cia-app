@@ -34,7 +34,7 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia render v${version}\n- Integrated automatic delta update\n- Step-by-step progress during RIFE installation\n- Fail-fast GPU/CUDA validation\n- Updated application branding & icons`,
+  notes: `cia render v${version}\n- Rebranding to cia render\n- Real-time video encoding progress telemetry and ETA\n- Streamlined titlebar and interface controls\n- Restored clean workstation typography`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
