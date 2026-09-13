@@ -16,12 +16,6 @@ silently fetch render engines.
       <a href="https://www.youtube.com/watch?v=8plMwxkAvlA">
         <img src="docs/video_preview.png" width="100%" alt="cia render video preview">
       </a>
-      <br>
-      <a href="https://www.youtube.com/watch?v=8plMwxkAvlA" title="Watch on YouTube">
-        <img src="https://img.shields.io/badge/YouTube-FF0000?style=flat-square&logo=youtube&logoColor=white" alt="YouTube" style="vertical-align: middle;" />
-      </a>
-      &nbsp;&bull;&nbsp;
-      <sub><a href="https://github.com/cia213/cia-app/releases/download/v1.1.0/preview.mp4">Direct Link: preview.mp4 (191 MB)</a></sub>
     </td>
   </tr>
 </table>
