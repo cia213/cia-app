@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -126,6 +128,13 @@ struct VideoInfo {
     fps: f64,
     duration: f64,
     has_audio: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoPreviewSet {
+    cover: String,
+    frames: Vec<String>,
 }
 
 struct MediaToolPaths {
@@ -990,6 +999,214 @@ async fn probe_video(video_path: &str, ffprobe: &Path) -> Result<VideoInfo, Stri
     })
 }
 
+const PREVIEW_FRAME_COUNT: usize = 8;
+const PREVIEW_FRAME_POSITIONS: [f64; PREVIEW_FRAME_COUNT] = [
+    0.06, 0.19, 0.32, 0.45, 0.58, 0.71, 0.84, 0.94,
+];
+
+fn preview_timestamps(duration: f64) -> [f64; PREVIEW_FRAME_COUNT] {
+    let safe_duration = if duration.is_finite() && duration > 0.0 {
+        duration
+    } else {
+        0.0
+    };
+    let last_frame = (safe_duration - 0.04).max(0.0);
+    PREVIEW_FRAME_POSITIONS.map(|position| (safe_duration * position).min(last_frame))
+}
+
+fn preview_luminance_score(pixels: &[u8]) -> Option<f64> {
+    if pixels.len() < 64 {
+        return None;
+    }
+
+    let mean = pixels.iter().map(|pixel| f64::from(*pixel)).sum::<f64>() / pixels.len() as f64;
+    let variance = pixels
+        .iter()
+        .map(|pixel| {
+            let difference = f64::from(*pixel) - mean;
+            difference * difference
+        })
+        .sum::<f64>()
+        / pixels.len() as f64;
+    let contrast = variance.sqrt();
+
+    // Plain black/white frames have very little usable visual information. The
+    // thresholds intentionally stay loose so a dark or bright real shot survives.
+    if !(18.0..=237.0).contains(&mean) || contrast < 5.0 {
+        return None;
+    }
+
+    Some(contrast - (mean - 128.0).abs() * 0.04)
+}
+
+async fn preview_luminance(
+    ffmpeg: &Path,
+    video_path: &str,
+    timestamp: f64,
+) -> Result<Option<f64>, String> {
+    let mut command = Command::new(ffmpeg);
+    command
+        .args(["-v", "error", "-ss"])
+        .arg(format!("{timestamp:.3}"))
+        .arg("-i")
+        .arg(video_path)
+        .args([
+            "-frames:v",
+            "1",
+            "-an",
+            "-vf",
+            "scale=48:27:force_original_aspect_ratio=decrease,format=gray",
+            "-pix_fmt",
+            "gray",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ]);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("FFmpeg could not inspect a preview frame: {error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(preview_luminance_score(&output.stdout))
+}
+
+async fn extract_preview_image(
+    ffmpeg: &Path,
+    video_path: &str,
+    timestamp: f64,
+    blend_frames: u32,
+) -> Result<String, String> {
+    let blend_frames = blend_frames.clamp(1, 24);
+    let filter = if blend_frames > 1 {
+        let weights = std::iter::repeat("1")
+            .take(blend_frames as usize)
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "tmix=frames={blend_frames}:weights='{weights}',trim=start_frame={},scale=480:270:force_original_aspect_ratio=decrease",
+            blend_frames - 1
+        )
+    } else {
+        "scale=480:270:force_original_aspect_ratio=decrease".to_string()
+    };
+    let mut command = Command::new(ffmpeg);
+    command
+        .args(["-v", "error", "-ss"])
+        .arg(format!("{timestamp:.3}"))
+        .arg("-i")
+        .arg(video_path)
+        .args([
+            "-frames:v",
+            "1",
+            "-an",
+            "-vf",
+        ])
+        .arg(filter)
+        .args([
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "pipe:1",
+        ]);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("FFmpeg could not generate a preview image: {error}"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(format!(
+            "FFmpeg could not generate a preview image: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(output.stdout)
+    ))
+}
+
+#[tauri::command]
+async fn generate_video_preview_set(
+    app: tauri::AppHandle,
+    video_path: String,
+    duration: f64,
+) -> Result<VideoPreviewSet, String> {
+    if !Path::new(&video_path).is_file() {
+        return Err("The selected video is no longer available".to_string());
+    }
+    let config = load_config(&app)?;
+    let media = media_tools(&config, &app)?;
+    let timestamps = preview_timestamps(duration);
+
+    let mut usable = Vec::new();
+    for (index, timestamp) in timestamps.iter().enumerate() {
+        if let Some(score) = preview_luminance(&media.ffmpeg, &video_path, *timestamp).await? {
+            usable.push((index, score));
+        }
+    }
+
+    let fallback_index = PREVIEW_FRAME_COUNT / 2;
+    let chosen_indexes: Vec<usize> = (0..PREVIEW_FRAME_COUNT)
+        .map(|index| {
+            usable
+                .iter()
+                .min_by_key(|(candidate, _)| candidate.abs_diff(index))
+                .map(|(candidate, _)| *candidate)
+                .unwrap_or(fallback_index)
+        })
+        .collect();
+    let cover_index = usable
+        .iter()
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(index, _)| *index)
+        .unwrap_or(fallback_index);
+
+    let mut frames = Vec::with_capacity(PREVIEW_FRAME_COUNT);
+    for index in &chosen_indexes {
+        frames.push(
+            extract_preview_image(&media.ffmpeg, &video_path, timestamps[*index], 1).await?,
+        );
+    }
+    let cover_frame_index = chosen_indexes
+        .iter()
+        .position(|index| *index == cover_index)
+        .unwrap_or(0);
+
+    Ok(VideoPreviewSet {
+        cover: frames[cover_frame_index].clone(),
+        frames,
+    })
+}
+
+#[tauri::command]
+async fn generate_video_preview_frame(
+    app: tauri::AppHandle,
+    video_path: String,
+    timestamp: f64,
+    blend_frames: Option<u32>,
+) -> Result<String, String> {
+    if !Path::new(&video_path).is_file() {
+        return Err("The selected video is no longer available".to_string());
+    }
+    let config = load_config(&app)?;
+    let media = media_tools(&config, &app)?;
+    extract_preview_image(
+        &media.ffmpeg,
+        &video_path,
+        timestamp.max(0.0),
+        blend_frames.unwrap_or(1),
+    )
+    .await
+}
+
 fn rife_output_path(
     video_path: &str,
     mode: &str,
@@ -1557,6 +1774,8 @@ pub fn run() {
             save_ui_preferences,
             pick_runtime_path,
             analyze_video,
+            generate_video_preview_set,
+            generate_video_preview_frame,
             install_rife_environment,
             pause_render,
             resume_render,
@@ -1574,7 +1793,30 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{reserve_output_path, rife_output_path, smoothie_output_path};
+    use super::{
+        preview_luminance_score, preview_timestamps, reserve_output_path, rife_output_path,
+        smoothie_output_path, PREVIEW_FRAME_COUNT,
+    };
+
+    #[test]
+    fn preview_selection_rejects_blank_frames_but_keeps_a_real_scene() {
+        assert!(preview_luminance_score(&vec![0; 48 * 27]).is_none());
+        assert!(preview_luminance_score(&vec![255; 48 * 27]).is_none());
+
+        let scene: Vec<u8> = (0..(48 * 27))
+            .map(|index| if index % 2 == 0 { 64 } else { 192 })
+            .collect();
+        assert!(preview_luminance_score(&scene).is_some());
+    }
+
+    #[test]
+    fn preview_selection_always_produces_eight_timeline_positions() {
+        let timestamps = preview_timestamps(20.0);
+        assert_eq!(timestamps.len(), PREVIEW_FRAME_COUNT);
+        assert!(timestamps.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(timestamps[0] > 0.0);
+        assert!(timestamps[PREVIEW_FRAME_COUNT - 1] < 20.0);
+    }
 
     #[test]
     fn interpolation_name_uses_only_the_actual_output_fps() {

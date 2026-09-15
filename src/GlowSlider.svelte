@@ -6,7 +6,8 @@
     step = 1,
     label = '',
     unit = '',
-    precision = 0
+    precision = 0,
+    editableMin = null
   } = $props();
 
   let isHovered = $state(false);
@@ -14,6 +15,9 @@
   
   // Target value that user is controlling
   let tempValue = $state(value);
+  let isValueEditing = $state(false);
+  let typedValue = $state('');
+  let typedInput = $state(null);
 
   // Sync tempValue when parent value changes externally
   $effect(() => {
@@ -44,12 +48,17 @@
   }
 
   $effect(() => {
-    vizRatio = (value - min) / (max - min);
+    vizRatio = Math.max(0, Math.min(1, (value - min) / (max - min)));
     lastTime = performance.now();
     animFrame = requestAnimationFrame(updateAnim);
     return () => {
       if (animFrame) cancelAnimationFrame(animFrame);
     };
+  });
+
+  $effect(() => {
+    if (!isValueEditing) return;
+    requestAnimationFrame(() => typedInput?.focus());
   });
 
   function handleInput(e) {
@@ -68,12 +77,63 @@
     return Number(tempValue).toFixed(precision);
   }
 
+  function beginValueEditing() {
+    if (editableMin === null) return;
+    typedValue = String(tempValue);
+    isValueEditing = true;
+  }
+
+  function commitTypedValue() {
+    if (editableMin === null) return;
+    const parsed = Number(typedValue);
+    if (Number.isFinite(parsed)) {
+      const snapped = Math.round((parsed - editableMin) / step) * step + editableMin;
+      tempValue = Math.max(editableMin, Math.min(max, snapped));
+      value = tempValue;
+    }
+    isValueEditing = false;
+  }
+
+  function cancelTypedValue() {
+    typedValue = String(tempValue);
+    isValueEditing = false;
+  }
+
+  function handleTypedKeydown(event) {
+    if (event.key === 'Enter') {
+      event.currentTarget.blur();
+    } else if (event.key === 'Escape') {
+      cancelTypedValue();
+    }
+  }
+
 </script>
 
 <div class="glow-slider-container">
-  <div class="slider-header">
-    <span class="slider-label">{label}</span>
-    <span class="slider-val">{displayValue()}{unit}</span>
+  <div class="slider-header" class:slider-header--unlabeled={!label}>
+    {#if label}
+      <span class="slider-label">{label}</span>
+    {/if}
+    {#if isValueEditing}
+      <input
+        class="slider-val-input"
+        type="number"
+        min={editableMin ?? min}
+        {max}
+        {step}
+        bind:value={typedValue}
+        onblur={commitTypedValue}
+        onkeydown={handleTypedKeydown}
+        aria-label={`${label || 'Value'} manual input`}
+        bind:this={typedInput}
+      />
+    {:else if editableMin !== null}
+      <button class="slider-val slider-val-button" type="button" ondblclick={beginValueEditing} title={`Double-click to enter a value from ${editableMin} to ${max}`}>
+        {displayValue()}{unit}
+      </button>
+    {:else}
+      <span class="slider-val">{displayValue()}{unit}</span>
+    {/if}
   </div>
 
   <div
@@ -90,7 +150,7 @@
       {min}
       {max}
       step="0.01"
-      value={tempValue}
+      value={Math.max(min, Math.min(max, tempValue))}
       oninput={handleInput}
       onchange={handleChange}
       class="native-hidden-input"
@@ -132,6 +192,8 @@
     margin-bottom: 8px;
   }
 
+  .slider-header--unlabeled { justify-content: flex-end; }
+
   .slider-label {
     font-size: 11px;
     font-weight: 700;
@@ -145,6 +207,27 @@
     font-weight: 700;
     color: #ffffff;
     font-variant-numeric: tabular-nums;
+  }
+
+  .slider-val-button {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    cursor: text;
+  }
+
+  .slider-val-input {
+    width: 7ch;
+    padding: 1px 3px;
+    background: #0c0c0f;
+    border: 0;
+    border-bottom: 1px solid #71717a;
+    color: #ffffff;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    outline: 0;
+    text-align: right;
   }
 
   .slider-track-wrap {

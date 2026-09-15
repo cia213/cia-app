@@ -34,7 +34,7 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia render v${version}\n- Restored clean workstation update styling (black background, white border, white text)\n- Renamed drop prompt to DRAG CLIP\n- Real-time video encoding progress telemetry and ETA`,
+  notes: `cia render v${version}\n- Redesigned industrial render processing layout with native aspect ratio preview\n- Real-time percentage progress bar during Render (Smoothie) pipeline\n- Real-time encoding progress bar and telemetry during RIFE output finalization\n- Synchronized telemetry with live framerate, elapsed time, and ETA\n- Instant completion preview with zero-delay cached cover recall`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {

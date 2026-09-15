@@ -26,7 +26,6 @@
   let encodingFps = $state('');
   let encodingFrame = $state(0);
   let encodingTime = $state('');
-  let isHoveringTimer = $state(false);
   let copyFeedback = $state(false);
   let toast = $state({ show: false, message: '', type: 'info' });
   let runtimeSnapshot = $state(null);
@@ -66,6 +65,10 @@
   let isRenderPaused = $state(false);
   let isCancellingRender = $state(false);
   let showRenderCancelConfirmation = $state(false);
+  let rifePreviewSet = $state(null);
+  let rifeOutputPreview = $state('');
+  let rifePreviewFrameIndex = $state(-1);
+  let rifePreviewHovered = false;
 
   const DEFAULT_RIFE = {
     mode: 'boost',
@@ -171,7 +174,26 @@
   let isSmoothieProcessing = $state(false);
   let isSmoothieComplete = $state(false);
   let smoothieInfo = $state(null);
+  let smoothieAspectRatio = $derived(
+    smoothieInfo?.width && smoothieInfo?.height
+      ? `${smoothieInfo.width} / ${smoothieInfo.height}`
+      : '16 / 9'
+  );
   let smoothieOutputPath = $state('');
+  let smoothiePreviewSet = $state(null);
+  let smoothieOutputPreview = $state('');
+  let smoothiePreviewFrameIndex = $state(-1);
+  let smoothiePreviewHovered = false;
+  let liveRenderPreview = $state('');
+  let isLiveRenderPreviewLoading = $state(false);
+  let rifePreviewRequest = 0;
+  let smoothiePreviewRequest = 0;
+  let rifeOutputPreviewRequest = 0;
+  let smoothieOutputPreviewRequest = 0;
+  let liveRenderPreviewRequest = 0;
+  let lastLiveRenderPreviewAt = 0;
+  let rifePreviewTimer = null;
+  let smoothiePreviewTimer = null;
 
   // --- Browser-like Navigation History ---
   let historyStack = $state([
@@ -243,16 +265,25 @@
   }
 
   function clearSmoothieSelection(resetComplete = false) {
+    smoothiePreviewRequest += 1;
+    smoothieOutputPreviewRequest += 1;
+    resetLiveRenderPreview();
     smoothiePath = '';
     smoothieInfo = null;
+    resetSourcePreview('smoothie');
+    smoothieOutputPreview = '';
     if (resetComplete) isSmoothieComplete = false;
     pushNavigation({ page: 'smoothie', smoothiePath: '', videoPath });
   }
 
   function clearVideoSelection() {
+    rifePreviewRequest += 1;
+    rifeOutputPreviewRequest += 1;
     videoPath = '';
     videoInfo = null;
     isComplete = false;
+    resetSourcePreview('rife');
+    rifeOutputPreview = '';
     pushNavigation({ page: 'dashboard', smoothiePath, videoPath: '' });
   }
 
@@ -365,6 +396,164 @@
     shouldShowExecutionLogs = true;
   }
 
+  function resetLiveRenderPreview() {
+    liveRenderPreviewRequest += 1;
+    lastLiveRenderPreviewAt = 0;
+    liveRenderPreview = '';
+    isLiveRenderPreviewLoading = false;
+  }
+
+  function sourcePreviewIsCurrent(kind, requestId, path) {
+    return kind === 'rife'
+      ? requestId === rifePreviewRequest && videoPath === path
+      : requestId === smoothiePreviewRequest && smoothiePath === path;
+  }
+
+  function clearSourcePreviewTimer(kind) {
+    const timer = kind === 'rife' ? rifePreviewTimer : smoothiePreviewTimer;
+    if (timer) clearInterval(timer);
+    if (kind === 'rife') rifePreviewTimer = null;
+    else smoothiePreviewTimer = null;
+  }
+
+  function setSourcePreviewFrameIndex(kind, index) {
+    if (kind === 'rife') rifePreviewFrameIndex = index;
+    else smoothiePreviewFrameIndex = index;
+  }
+
+  function startSourcePreviewCycle(kind) {
+    if (kind === 'rife') rifePreviewHovered = true;
+    else smoothiePreviewHovered = true;
+
+    const previewSet = kind === 'rife' ? rifePreviewSet : smoothiePreviewSet;
+    const frames = previewSet?.frames || [];
+    if (frames.length !== 8) return;
+
+    clearSourcePreviewTimer(kind);
+    const currentIndex = kind === 'rife' ? rifePreviewFrameIndex : smoothiePreviewFrameIndex;
+    setSourcePreviewFrameIndex(kind, currentIndex >= 0 ? (currentIndex + 1) % frames.length : 0);
+    const timer = setInterval(() => {
+      const index = kind === 'rife' ? rifePreviewFrameIndex : smoothiePreviewFrameIndex;
+      setSourcePreviewFrameIndex(kind, (index + 1) % frames.length);
+    }, 500);
+    if (kind === 'rife') rifePreviewTimer = timer;
+    else smoothiePreviewTimer = timer;
+  }
+
+  function stopSourcePreviewCycle(kind) {
+    if (kind === 'rife') rifePreviewHovered = false;
+    else smoothiePreviewHovered = false;
+    clearSourcePreviewTimer(kind);
+  }
+
+  function resetSourcePreview(kind) {
+    clearSourcePreviewTimer(kind);
+    setSourcePreviewFrameIndex(kind, -1);
+    if (kind === 'rife') {
+      rifePreviewHovered = false;
+      rifePreviewSet = null;
+    } else {
+      smoothiePreviewHovered = false;
+      smoothiePreviewSet = null;
+    }
+  }
+
+  async function loadSourcePreviewCover(kind, path, duration, requestId) {
+    try {
+      const image = await invoke('generate_video_preview_frame', {
+        videoPath: path,
+        timestamp: Math.max(0, duration * 0.12),
+        blendFrames: 1
+      });
+      if (!sourcePreviewIsCurrent(kind, requestId, path)) return;
+      const previewSet = kind === 'rife' ? rifePreviewSet : smoothiePreviewSet;
+      if (previewSet?.frames?.length === 8) return;
+      if (kind === 'rife') rifePreviewSet = { cover: image, frames: [] };
+      else smoothiePreviewSet = { cover: image, frames: [] };
+    } catch (error) {
+      appendLog(`[cia render] Preview cover unavailable: ${error}`);
+    }
+  }
+
+  async function loadSourcePreviewFrames(kind, path, duration, requestId) {
+    try {
+      const previewSet = await invoke('generate_video_preview_set', { videoPath: path, duration });
+      if (!sourcePreviewIsCurrent(kind, requestId, path)) return;
+      if (kind === 'rife') rifePreviewSet = previewSet;
+      else smoothiePreviewSet = previewSet;
+
+      const isHovered = kind === 'rife' ? rifePreviewHovered : smoothiePreviewHovered;
+      if (isHovered) startSourcePreviewCycle(kind);
+    } catch (error) {
+      // A preview is convenience UI. It must never prevent the selected video from rendering.
+      appendLog(`[cia render] Preview sequence unavailable: ${error}`);
+    }
+  }
+
+  function loadSourcePreview(kind, path, duration) {
+    const requestId = kind === 'rife' ? ++rifePreviewRequest : ++smoothiePreviewRequest;
+    resetSourcePreview(kind);
+    void (async () => {
+      // The single still gets the disk/decoder first. Only afterwards does the
+      // optional eight-frame scan begin, so the initial view is never queued
+      // behind seven extra FFmpeg processes.
+      await loadSourcePreviewCover(kind, path, duration, requestId);
+      setTimeout(() => void loadSourcePreviewFrames(kind, path, duration, requestId), 0);
+    })();
+  }
+
+  async function loadOutputPreview(kind, path, duration) {
+    if (kind === 'rife') {
+      rifeOutputPreview = rifePreviewSet?.cover || '';
+    } else {
+      smoothieOutputPreview = liveRenderPreview || smoothiePreviewSet?.cover || '';
+    }
+  }
+
+  async function refreshLiveRenderPreview(path, duration, currentProgress) {
+    if (isLiveRenderPreviewLoading || isRenderPaused) return;
+    const now = Date.now();
+    if (now - lastLiveRenderPreviewAt < 1000) return;
+    lastLiveRenderPreviewAt = now;
+    const requestId = ++liveRenderPreviewRequest;
+    isLiveRenderPreviewLoading = true;
+    const safeProgress = Math.max(0, Math.min(99.8, Number(currentProgress) || 0));
+
+    try {
+      const image = await invoke('generate_video_preview_frame', {
+        videoPath: path,
+        timestamp: duration * (safeProgress / 100),
+        blendFrames: Math.min(24, Math.max(4, Math.round(
+          ((smoothieInfo?.fps || 30) / Math.max(1, smoothieSettings.fps)) *
+          (1 + Number(smoothieSettings.blendIntensity || 0))
+        )))
+      });
+      if (
+        requestId === liveRenderPreviewRequest &&
+        isSmoothieProcessing &&
+        !isRenderPaused &&
+        smoothiePath === path
+      ) {
+        liveRenderPreview = image;
+      }
+    } catch (error) {
+      appendLog(`[cia render] Live preview unavailable: ${error}`);
+    } finally {
+      if (requestId === liveRenderPreviewRequest) isLiveRenderPreviewLoading = false;
+    }
+  }
+
+  $effect(() => {
+    const path = smoothiePath;
+    const duration = smoothieInfo?.duration || 0;
+    const currentProgress = progress;
+    if (isSmoothieProcessing && !isRenderPaused && path && duration > 0) {
+      void refreshLiveRenderPreview(path, duration, currentProgress);
+    } else if (!isSmoothieProcessing) {
+      resetLiveRenderPreview();
+    }
+  });
+
   function createRenderJobId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
     return `cia-render-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -374,15 +563,39 @@
     return String(error).includes('CIA_RENDER_CANCELLED');
   }
 
+  function interpolationStatusLabel() {
+    if (isRenderPaused) return jobPhase === 'smoothie' ? 'RENDER PAUSED' : 'RIFE PAUSED';
+    if (isEncodingPhase) {
+      if (encodingSpeed) return `ENCODING (${encodingSpeed})`;
+      if (encodingFps) return `ENCODING (${encodingFps} FPS)`;
+      return 'ENCODING EXPORT';
+    }
+    return jobPhase === 'smoothie' ? 'SMOOTHIE RENDERING' : 'RIFE PROCESSING';
+  }
+
+  function smoothieStatusLabel() {
+    if (isRenderPaused) return 'RENDER PAUSED';
+    if (isEncodingPhase) {
+      if (encodingSpeed) return `ENCODING (${encodingSpeed})`;
+      if (encodingFps) return `ENCODING (${encodingFps} FPS)`;
+      return 'ENCODING EXPORT';
+    }
+    return 'RENDERING';
+  }
+
+  function activeProcessLabel() {
+    return isSmoothieProcessing || jobPhase === 'smoothie' ? 'Render' : 'Interpolation';
+  }
+
   async function toggleRenderPause() {
-    if (!activeRenderJobId || jobPhase !== 'rife' || isCancellingRender) return;
+    if (!activeRenderJobId || isCancellingRender) return;
+    const processLabel = activeProcessLabel();
     try {
       await invoke(isRenderPaused ? 'resume_render' : 'pause_render', { jobId: activeRenderJobId });
       isRenderPaused = !isRenderPaused;
-      appendLog(`[cia render] RIFE ${isRenderPaused ? 'paused' : 'resumed'} by user`);
-      showToast(isRenderPaused ? 'Interpolation paused' : 'Interpolation resumed', 'info');
+      appendLog(`[cia render] ${processLabel} ${isRenderPaused ? 'paused' : 'resumed'} by user`);
     } catch (e) {
-      showToast(`Unable to ${isRenderPaused ? 'resume' : 'pause'} interpolation: ${e}`, 'error');
+      appendLog(`[cia render] Unable to ${isRenderPaused ? 'resume' : 'pause'} ${processLabel.toLowerCase()}: ${e}`);
     }
   }
 
@@ -394,7 +607,7 @@
       await invoke('cancel_render', { jobId: activeRenderJobId });
       appendLog('[cia render] Cancellation requested by user');
     } catch (e) {
-      showToast(`Unable to cancel render: ${e}`, 'error');
+      appendLog(`[cia render] Unable to cancel render: ${e}`);
       isCancellingRender = false;
     }
   }
@@ -413,17 +626,93 @@
   function parseLogLine(line) {
     appendLog(line);
 
-    const isFfmpegProgress = line.includes('frame=') && (line.includes('time=') || line.includes('fps='));
-    if (isFfmpegProgress || line.includes('Finalizing output') || line.includes('FFmpeg')) {
+    if (line.includes('Finalizing output with FFmpeg') || line.includes('[cia render] Finalizing output')) {
       isEncodingPhase = true;
+      progress = 0;
+      encodingProgress = 0;
+      encodingFrame = 0;
+      encodingFps = '';
+      encodingSpeed = '';
+      encodingTime = '';
+      remainingTime = '--:--';
+      return;
     }
 
+    if (line.includes('[cia render] ENCODING frame=')) {
+      isEncodingPhase = true;
+      const frameMatch = line.match(/frame=(\d+)/);
+      if (frameMatch) encodingFrame = parseInt(frameMatch[1], 10);
+
+      const totalMatch = line.match(/total_frames=(\d+)/);
+      const totalFrames = totalMatch ? parseInt(totalMatch[1], 10) : 0;
+
+      const fpsMatch = line.match(/fps=([\d.]+)/);
+      if (fpsMatch) encodingFps = fpsMatch[1];
+
+      const speedMatch = line.match(/speed=([\d.]+)x/);
+      if (speedMatch) encodingSpeed = `${speedMatch[1]}x`;
+
+      const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2})/);
+      if (timeMatch) {
+        encodingTime = timeMatch[1];
+        elapsedTime = timeMatch[1].slice(3);
+      }
+
+      const pctMatch = line.match(/pct=(\d+)%/);
+      if (pctMatch) {
+        const pctVal = Math.min(100, Math.max(0, parseInt(pctMatch[1], 10)));
+        progress = pctVal;
+        encodingProgress = pctVal;
+      }
+
+      if (fpsMatch && totalFrames > 0 && frameMatch) {
+        const fpsVal = parseFloat(fpsMatch[1]);
+        const curF = parseInt(frameMatch[1], 10);
+        if (fpsVal > 0 && curF < totalFrames) {
+          const remSec = Math.max(0, Math.round((totalFrames - curF) / fpsVal));
+          const remMins = Math.floor(remSec / 60);
+          const remSecs = remSec % 60;
+          remainingTime = `${remMins.toString().padStart(2, '0')}:${remSecs.toString().padStart(2, '0')}`;
+        } else if (curF >= totalFrames) {
+          remainingTime = '00:00';
+        }
+      }
+      return;
+    }
+
+    const smPct = line.match(/(\d+(?:\.\d+)?)%\s*\u2022/);
+    if (smPct) {
+      if (activePage === 'smoothie') isEncodingPhase = true;
+      const pctVal = Math.min(100, Math.max(0, Math.round(parseFloat(smPct[1]))));
+      progress = pctVal;
+      encodingProgress = pctVal;
+
+      const smFrames = line.match(/•\s*(\d+)\s*\/\s*(\d+)\s*•/);
+      if (smFrames) {
+        encodingFrame = parseInt(smFrames[1], 10);
+      }
+
+      const smFps = line.match(/•\s*([0-9.]+)\s*FPS/);
+      if (smFps && smFps[1] !== 'NaN') {
+        encodingFps = smFps[1];
+      }
+
+      const smTimer = line.match(/(\d+:\d{2})\s*>\s*(\d+:\d{2})/);
+      if (smTimer) {
+        elapsedTime = smTimer[1];
+        remainingTime = smTimer[2];
+      }
+      return;
+    }
+
+    const isFfmpegProgress = line.includes('frame=') && line.includes('time=') && !line.includes('time=N/A');
     if (isFfmpegProgress) {
+      isEncodingPhase = true;
       const frameMatch = line.match(/frame=\s*(\d+)/);
       if (frameMatch) encodingFrame = parseInt(frameMatch[1], 10);
 
       const fpsMatch = line.match(/fps=\s*([\d.]+)/);
-      if (fpsMatch) encodingFps = fpsMatch[1];
+      if (fpsMatch && fpsMatch[1] !== '0.0') encodingFps = fpsMatch[1];
 
       const speedMatch = line.match(/speed=\s*([\d.]+)x/);
       if (speedMatch) encodingSpeed = `${speedMatch[1]}x`;
@@ -435,6 +724,7 @@
         const seconds = parseFloat(timeMatch[3]);
         const curSec = hours * 3600 + minutes * 60 + seconds;
         encodingTime = `${timeMatch[1]}:${timeMatch[2]}:${Math.floor(seconds).toString().padStart(2, '0')}`;
+        elapsedTime = `${timeMatch[2]}:${Math.floor(seconds).toString().padStart(2, '0')}`;
 
         let targetDuration = 0;
         if (activePage === 'smoothie' && smoothieInfo?.duration) {
@@ -445,7 +735,7 @@
             : videoInfo.duration;
         }
 
-        if (targetDuration > 0) {
+        if (targetDuration > 0 && curSec > 0) {
           const calculatedPct = Math.min(99, Math.max(1, Math.round((curSec / targetDuration) * 100)));
           encodingProgress = calculatedPct;
           progress = calculatedPct;
@@ -468,14 +758,8 @@
       const rifePct = line.match(/^\s*(\d{1,3})%/);
       if (rifePct) progress = parseInt(rifePct[1], 10);
 
-      const smPct = line.match(/(\d+(?:\.\d+)?)%\s*\u2022/);
-      if (smPct) progress = Math.round(parseFloat(smPct[1]));
-
       const rifeTimer = line.match(/\[(\d+(?::\d+)+)<(\d+(?::\d+)+)/);
       if (rifeTimer) { elapsedTime = rifeTimer[1]; remainingTime = rifeTimer[2]; }
-
-      const smTimer = line.match(/(\d+:\d{2})\s*>\s*(\d+:\d{2})/);
-      if (smTimer) { elapsedTime = smTimer[1]; remainingTime = smTimer[2]; }
     }
   }
 
@@ -535,16 +819,21 @@
 
   // --- RIFE Handlers ---
   async function loadVideo(path, pushNav = true) {
+    rifePreviewRequest += 1;
+    rifeOutputPreviewRequest += 1;
     videoPath = path;
     isLoading = true;
     isComplete = false;
     lastOutputPath = '';
     rifeOutputPath = '';
+    resetSourcePreview('rife');
+    rifeOutputPreview = '';
     jobPhase = 'idle';
     jobError = '';
     resetRunState();
     try {
       videoInfo = await invoke('analyze_video', { videoPath: path });
+      void loadSourcePreview('rife', path, videoInfo.duration);
       showToast(`Loaded ${videoInfo.width}x${videoInfo.height} @ ${videoInfo.fps.toFixed(2)} FPS`, 'success');
       if (pushNav) {
         pushNavigation({ page: 'dashboard', smoothiePath, videoPath: path });
@@ -569,6 +858,8 @@
     isComplete = false;
     lastOutputPath = '';
     rifeOutputPath = '';
+    rifeOutputPreviewRequest += 1;
+    rifeOutputPreview = '';
     jobError = '';
     jobPhase = 'rife';
     activeRenderJobId = createRenderJobId();
@@ -602,6 +893,7 @@
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
+      void loadOutputPreview('rife', lastOutputPath, outputDuration);
       playCompletionChime();
       showToast(autoRender ? 'Interpolation and render complete!' : 'Interpolation complete!', 'success');
     } catch (e) {
@@ -609,7 +901,6 @@
         jobError = '';
         jobPhase = 'idle';
         isComplete = false;
-        showToast('Interpolation cancelled', 'info');
       } else {
         jobError = isCancellation(e) ? 'Render cancelled. The RIFE output is still available.' : String(e);
       }
@@ -617,6 +908,7 @@
         lastOutputPath = rifeOutputPath;
         isComplete = true;
         jobPhase = 'failed';
+        void loadOutputPreview('rife', lastOutputPath, outputDuration);
       } else if (!isCancellation(e)) {
         jobPhase = 'failed';
       }
@@ -630,6 +922,8 @@
   }
 
   function resetInterpolation() {
+    rifePreviewRequest += 1;
+    rifeOutputPreviewRequest += 1;
     videoPath = '';
     videoInfo = null;
     isComplete = false;
@@ -637,6 +931,8 @@
     lastOutputPath = '';
     jobPhase = 'idle';
     jobError = '';
+    resetSourcePreview('rife');
+    rifeOutputPreview = '';
     resetRunState();
   }
 
@@ -647,6 +943,7 @@
     jobError = '';
     jobPhase = 'smoothie';
     activeRenderJobId = createRenderJobId();
+    isRenderPaused = false;
     isCancellingRender = false;
     try {
       const smoothiePath = await runSmoothieFor(rifeOutputPath, { preserveLogs: true, jobId: activeRenderJobId });
@@ -655,6 +952,7 @@
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
+      void loadOutputPreview('rife', lastOutputPath, outputDuration);
       playCompletionChime();
       showToast('Render complete!', 'success');
     } catch (e) {
@@ -662,10 +960,11 @@
       lastOutputPath = rifeOutputPath;
       jobPhase = 'failed';
       isComplete = true;
-      showToast(isCancellation(e) ? 'Render cancelled' : `Render failed: ${e}`, isCancellation(e) ? 'info' : 'error');
+      if (!isCancellation(e)) showToast(`Render failed: ${e}`, 'error');
     } finally {
       isProcessing = false;
       activeRenderJobId = '';
+      isRenderPaused = false;
       isCancellingRender = false;
     }
   }
@@ -684,13 +983,19 @@
 
   // --- Smoothie Handlers ---
   async function loadSmoothie(path, pushNav = true) {
+    smoothiePreviewRequest += 1;
+    smoothieOutputPreviewRequest += 1;
+    resetLiveRenderPreview();
     smoothiePath = path;
     isSmoothieLoading = true;
     isSmoothieComplete = false;
     smoothieOutputPath = '';
+    resetSourcePreview('smoothie');
+    smoothieOutputPreview = '';
     resetRunState();
     try {
       smoothieInfo = await invoke('analyze_video', { videoPath: path });
+      void loadSourcePreview('smoothie', path, smoothieInfo.duration);
       showToast(`Loaded ${smoothieInfo.width}x${smoothieInfo.height} @ ${smoothieInfo.fps.toFixed(2)} FPS`, 'success');
       if (pushNav) {
         pushNavigation({ page: 'smoothie', smoothiePath: path, videoPath });
@@ -739,21 +1044,29 @@
     isSmoothieProcessing = true;
     isSmoothieComplete = false;
     smoothieOutputPath = '';
+    smoothieOutputPreviewRequest += 1;
+    smoothieOutputPreview = smoothiePreviewSet?.cover || '';
+    resetLiveRenderPreview();
     activeRenderJobId = createRenderJobId();
+    isRenderPaused = false;
     isCancellingRender = false;
+    isEncodingPhase = true;
 
     try {
       const outPath = await runSmoothieFor(smoothiePath, { jobId: activeRenderJobId });
       progress = 100;
-      isSmoothieComplete = true;
       smoothieOutputPath = outPath;
+      smoothieOutputPreview = liveRenderPreview || smoothiePreviewSet?.cover || '';
+      isSmoothieComplete = true;
+      void loadOutputPreview('smoothie', outPath, smoothieInfo?.duration || 0);
       playCompletionChime();
       showToast('Render complete!', 'success');
     } catch (e) {
-      showToast(isCancellation(e) ? 'Render cancelled' : `Render failed: ${e}`, isCancellation(e) ? 'info' : 'error');
+      if (!isCancellation(e)) showToast(`Render failed: ${e}`, 'error');
     } finally {
       isSmoothieProcessing = false;
       activeRenderJobId = '';
+      isRenderPaused = false;
       isCancellingRender = false;
     }
   }
@@ -1064,9 +1377,8 @@
               <div class="install-progress-label">{installLabel || 'PREPARING ENVIRONMENT'}</div>
               <div class="pro-progress-row">
                 <div class="pro-track">
-                  <div class="pro-fill" style="width: {installTotal > 0 ? (installStep / installTotal) * 100 : 0}%"></div>
+                  <div class="pro-indeterminate-sweep"></div>
                 </div>
-                <span class="pro-percent-readout">{installStep}/{installTotal}</span>
               </div>
             </div>
           {:else}
@@ -1097,135 +1409,119 @@
             </header>
 
             <div class="pro-pipeline-box">
-              <div class="pipeline-node">
-                <span class="node-label">INPUT</span>
-                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {videoInfo.fps.toFixed(0)} FPS</span>
-              </div>
-              <div class="pipeline-arrow" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M5 12h14M12 5l7 7-7 7" />
-                </svg>
-              </div>
-              <div class="pipeline-node">
-                <span class="node-label">OUTPUT</span>
-                <span class="node-val">{videoInfo.width}x{videoInfo.height} @ {outputFps.toFixed(0)} FPS ({rifeSettings.factor}x)</span>
-              </div>
-              <div class="pipeline-tags">
-                <span class="chip">H.264 CRF {rifeSettings.crf}</span>
-                <span class="chip">{rifeSettings.preset}</span>
-              </div>
-            </div>
-
-            <div class="pro-telemetry-grid">
-              <div class="telemetry-cell">
-                <span class="telemetry-label">STATUS</span>
-                <span class="telemetry-val highlight">
-                  {isRenderPaused
-                    ? 'RIFE PAUSED'
-                    : isEncodingPhase
-                    ? (encodingSpeed ? `ENCODING (${encodingSpeed})` : 'ENCODING EXPORT')
-                    : jobPhase === 'smoothie'
-                    ? 'SMOOTHIE RENDERING'
-                    : 'RIFE PROCESSING'}
+              <div class="fps-signature" aria-label={`Frame rate transformation: ${videoInfo.fps.toFixed(0)} frames per second to ${outputFps.toFixed(0)} frames per second`}>
+                <span class="fps-value">{videoInfo.fps.toFixed(0)}</span>
+                <span class="fps-transition" class:paused={isRenderPaused} aria-hidden="true">
+                  <span class="fps-dot"></span><span class="fps-dot"></span><span class="fps-dot"></span>
                 </span>
-              </div>
-              <div class="telemetry-cell">
-                <span class="telemetry-label">ELAPSED</span>
-                <span class="telemetry-val mono">{elapsedTime}</span>
-              </div>
-              <div class="telemetry-cell">
-                <span class="telemetry-label">EST. REMAINING</span>
-                <span class="telemetry-val mono">{remainingTime}</span>
+                <span class="fps-value">{outputFps.toFixed(0)}</span>
+                <span class="fps-unit">FPS</span>
               </div>
             </div>
 
             <div class="pro-progress-card">
               <div class="pro-progress-header">
-                <span class="progress-stage-name">
-                  {#if isEncodingPhase}
-                    ENCODING EXPORT CONTAINER {encodingFrame > 0 ? `• FRAME ${encodingFrame.toLocaleString()} • ${encodingFps} FPS` : ''}
-                  {:else if jobPhase === 'smoothie'}
-                    SMOOTHIE RENDERING
-                  {:else}
-                    INTERPOLATING FRAMES
-                  {/if}
-                </span>
-                <span class="pro-percent-hero">{progress}%</span>
+                <span class="progress-stage-name">{interpolationStatusLabel()}</span>
+                <div class="progress-summary">
+                  <span class="pro-percent-hero">{progress}%</span>
+                  <span
+                    class="progress-time"
+                    aria-label={`Estimated remaining: ${remainingTime}. Elapsed: ${elapsedTime}.`}
+                  ><span class="eta-time" aria-hidden="true">{remainingTime}</span><span class="elapsed-time" aria-hidden="true">{elapsedTime}</span></span>
+                </div>
               </div>
-              <div class="pro-track">
-                <div class="pro-fill" style="width: {progress}%"></div>
-                {#if isEncodingPhase && progress < 100}
-                  <div class="pro-fill-encoding"></div>
-                {/if}
+              <div class="pro-track" class:paused={isRenderPaused}>
+                <div class="pro-indeterminate-sweep"></div>
               </div>
             </div>
 
             <div class="render-control-row">
-              {#if jobPhase === 'rife'}
-                <button class="btn-pro-secondary" onclick={toggleRenderPause} disabled={isCancellingRender}>
-                  {isRenderPaused ? 'RESUME' : 'PAUSE'}
-                </button>
-              {/if}
-              <button class="btn-pro-secondary danger-action" onclick={() => showRenderCancelConfirmation = true} disabled={isCancellingRender}>
-                {isCancellingRender ? 'CANCELLING...' : 'CANCEL RENDER'}
+              <button
+                class="btn-pro-icon"
+                class:is-resume={isRenderPaused}
+                onclick={toggleRenderPause}
+                disabled={isCancellingRender}
+                aria-label={isRenderPaused ? 'Resume interpolation' : 'Pause interpolation'}
+              >
+                {#if isRenderPaused}
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z" fill="currentColor" /></svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="0.75" fill="currentColor" /><rect x="14" y="5" width="4" height="14" rx="0.75" fill="currentColor" /></svg>
+                {/if}
+              </button>
+              <button
+                class="btn-pro-icon cancel-control"
+                onclick={() => showRenderCancelConfirmation = true}
+                disabled={isCancellingRender}
+                aria-label="Cancel interpolation"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="0.75" fill="currentColor" /></svg>
               </button>
             </div>
           </div>
         {:else if isComplete}
-          <div class="pro-complete-card">
+          <div class="pro-complete-card" class:interrupted={Boolean(jobError)}>
             {#if jobError}
               <span class="completion-error">{jobError}</span>
             {/if}
-            <div class="pro-output-box">
-              <span class="box-label">EXPORTED FILE</span>
-              <span class="box-path">{lastOutputPath.split(/[\\/]/).pop()}</span>
-            </div>
+            <button class="completion-preview" onclick={openFile} aria-label="Open rendered video">
+              {#if rifeOutputPreview || rifePreviewSet?.cover}
+                <img src={rifeOutputPreview || rifePreviewSet.cover} alt="Preview of the rendered video" />
+              {:else}
+                <span class="completion-preview-loading">PREPARING PREVIEW</span>
+              {/if}
+            </button>
+            <span class="completion-output-name" title={lastOutputPath}>{lastOutputPath.split(/[\\/]/).pop()}</span>
 
             <div class="complete-actions-row">
-              <button class="btn-pro-secondary" onclick={openFile}>OPEN FILE</button>
-              <button class="btn-pro-secondary" onclick={openFolder}>REVEAL IN EXPLORER</button>
+              <button class="btn-pro-secondary completion-action" onclick={openFolder}>REVEAL IN EXPLORER</button>
               {#if canRenderSmoothie}
-                <button class="btn-pro-secondary" onclick={renderRifeWithSmoothie}>{jobPhase === 'failed' ? 'RETRY RENDER' : 'RENDER'}</button>
+                <button class="btn-pro-secondary completion-action" onclick={renderRifeWithSmoothie}>{jobPhase === 'failed' ? 'RETRY RENDER' : 'RENDER'}</button>
               {/if}
-              <button class="btn-pro-secondary" onclick={resetInterpolation}>NEW RENDER</button>
+              <button class="btn-pro-secondary completion-action" onclick={resetInterpolation}>NEW RENDER</button>
             </div>
           </div>
         {:else}
-          <div class="minimal-grid">
-            <!-- Video Summary Card -->
-            <div class="card">
-              <h3>VIDEO INFO</h3>
-              <div class="info-row"><span>File</span><span class="mono">{videoPath.split(/[\\/]/).pop()}</span></div>
-              <div class="info-row"><span>Resolution</span><span>{videoInfo.width} x {videoInfo.height}</span></div>
-              <div class="info-row"><span>Source FPS</span><span>{videoInfo.fps.toFixed(2)}</span></div>
-              <div class="info-row"><span>Duration</span><span>{videoInfo.duration.toFixed(2)}s</span></div>
-              <button class="btn-secondary" onclick={clearVideoSelection}>CHANGE VIDEO</button>
-            </div>
-
-            <!-- Quick Action Card -->
-            <div class="card action-card">
-              <div class="card-header">
-                <h3>INTERPOLATION FACTOR</h3>
-                <button class="btn-icon-settings" onclick={() => showRifeSettings = true}>SETTINGS</button>
+          <div class="settings-workspace">
+            <section class="settings-unified-panel">
+              <div class="settings-source-stage">
+                <header class="settings-panel-header">
+                  <h3 class="settings-media-name" title={videoPath}>{videoPath.split(/[\\/]/).pop()}</h3>
+                </header>
+                <div class="source-preview" role="group" aria-label="Eight-frame source video preview" onmouseenter={() => startSourcePreviewCycle('rife')} onmouseleave={() => stopSourcePreviewCycle('rife')}>
+                  {#if rifePreviewSet?.frames?.[rifePreviewFrameIndex]}
+                    <img class="source-preview-cover" src={rifePreviewSet.frames[rifePreviewFrameIndex]} alt="Preview of selected source video" />
+                  {:else if rifePreviewSet?.cover}
+                    <img class="source-preview-cover" src={rifePreviewSet.cover} alt="Preview of selected source video" />
+                  {:else}
+                    <span class="source-preview-loading" aria-label="Preparing video preview"></span>
+                  {/if}
+                  <button class="settings-change-btn" onclick={clearVideoSelection} aria-label="Choose another video">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h9m0 0-3-3m3 3-3 3M17 17H8m0 0 3 3m-3-3 3-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                </div>
               </div>
 
-              <!-- Factor Slider 2x to 10x -->
-              <GlowSlider bind:value={rifeSettings.factor} min={2} max={10} step={1} label="FACTOR:" unit="x" />
+              <div class="settings-config-stage">
+                <header class="settings-panel-header">
+                  <h3 class="settings-title">settings</h3>
+                  <button class="btn-details" onclick={() => showRifeSettings = true}>DETAILS</button>
+                </header>
 
-              <label class="auto-render-toggle">
-                <input type="checkbox" bind:checked={autoRender} onchange={saveAutoRender} />
-                <span>AUTO-RENDER AFTER INTERPOLATION</span>
-              </label>
+                <div class="settings-main-control">
+                  <GlowSlider bind:value={rifeSettings.factor} min={2} max={10} step={1} label="" unit="x" />
+                </div>
 
-              <div class="output-preview">
-                <span>Out: {outputFps.toFixed(0)} FPS</span>
-                <span>Dur: {outputDuration.toFixed(2)}s</span>
+                <label class="auto-render-toggle">
+                  <input type="checkbox" bind:checked={autoRender} onchange={saveAutoRender} />
+                  <span>AUTO-RENDER AFTER INTERPOLATION</span>
+                </label>
+
+                <button class="btn-pro-secondary settings-start" onclick={startProcessing} disabled={anyProcessing}>
+                  {isProcessing ? 'PROCESSING...' : 'START INTERPOLATION'}
+                </button>
               </div>
-
-              <button class="btn-primary" onclick={startProcessing} disabled={anyProcessing}>
-                {isProcessing ? 'PROCESSING...' : 'START INTERPOLATION'}
-              </button>
-            </div>
+            </section>
           </div>
         {/if}
       {/if}
@@ -1248,119 +1544,131 @@
         <div class="loading-state"><p>ANALYZING VIDEO MATRIX...</p></div>
       {:else if smoothieInfo}
         {#if isSmoothieProcessing}
-          <div class="pro-render-card">
-            <header class="pro-header">
+          <div class="pro-render-card render-processing-card">
+            <header class="render-processing-header">
               <h3 class="pro-filename" title={smoothiePath.split(/[\\/]/).pop()}>{smoothiePath.split(/[\\/]/).pop()}</h3>
+              <div class="fps-signature" aria-label={`Frame rate transformation: ${smoothieInfo.fps.toFixed(0)} frames per second to ${smoothieSettings.fps} frames per second`}>
+                <span class="fps-value">{smoothieInfo.fps.toFixed(0)}</span>
+                <span class="fps-transition" class:paused={isRenderPaused} aria-hidden="true">
+                  <span class="fps-dot"></span><span class="fps-dot"></span><span class="fps-dot"></span>
+                </span>
+                <span class="fps-value">{smoothieSettings.fps}</span>
+                <span class="fps-unit">FPS</span>
+              </div>
             </header>
 
-            <div class="pro-pipeline-box">
-              <div class="pipeline-node">
-                <span class="node-label">INPUT</span>
-                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieInfo.fps.toFixed(0)} FPS</span>
-              </div>
-              <div class="pipeline-arrow" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M5 12h14M12 5l7 7-7 7" />
-                </svg>
-              </div>
-              <div class="pipeline-node">
-                <span class="node-label">OUTPUT</span>
-                <span class="node-val">{smoothieInfo.width}x{smoothieInfo.height} @ {smoothieSettings.fps} FPS</span>
-              </div>
-              <div class="pipeline-tags">
-                <span class="chip">LUT: {smoothieSettings.lutEnabled === 'yes' ? 'ON' : 'OFF'}</span>
-                <span class="chip">CRF 18</span>
-              </div>
-            </div>
-
-            <div class="pro-telemetry-grid">
-              <div class="telemetry-cell">
-                <span class="telemetry-label">STATUS</span>
-                <span class="telemetry-val highlight">
-                  {isEncodingPhase
-                    ? (encodingSpeed ? `ENCODING (${encodingSpeed})` : 'ENCODING EXPORT')
-                    : 'RENDERING'}
-                </span>
-              </div>
-              <div class="telemetry-cell">
-                <span class="telemetry-label">ELAPSED</span>
-                <span class="telemetry-val mono">{elapsedTime}</span>
-              </div>
-              <div class="telemetry-cell">
-                <span class="telemetry-label">EST. REMAINING</span>
-                <span class="telemetry-val mono">{remainingTime}</span>
-              </div>
-            </div>
-
-            <div class="pro-progress-card">
-              <div class="pro-progress-header">
-                <span class="progress-stage-name">
-                  {#if isEncodingPhase}
-                    ENCODING EXPORT CONTAINER {encodingFrame > 0 ? `• FRAME ${encodingFrame.toLocaleString()} • ${encodingFps} FPS` : ''}
-                  {:else}
-                    RENDERING SMOOTHIE PIPELINE
-                  {/if}
-                </span>
-                <span class="pro-percent-hero">{progress}%</span>
-              </div>
-              <div class="pro-track">
-                <div class="pro-fill" style="width: {progress}%"></div>
-                {#if isEncodingPhase && progress < 100}
-                  <div class="pro-fill-encoding"></div>
+            <div class="render-preview-stage">
+              <section
+                class="live-render-preview"
+                style={`aspect-ratio: ${smoothieAspectRatio};`}
+                aria-label="Low resolution render timeline preview"
+              >
+                {#if liveRenderPreview || smoothiePreviewSet?.cover}
+                  <img src={liveRenderPreview || smoothiePreviewSet.cover} alt="Current blended source frame at the render timeline position" />
+                {:else}
+                  <span class="live-preview-loading" aria-label="Preparing live preview"></span>
                 {/if}
-              </div>
+              </section>
             </div>
 
-            <div class="render-control-row">
-              <button class="btn-pro-secondary danger-action" onclick={() => showRenderCancelConfirmation = true} disabled={isCancellingRender}>
-                {isCancellingRender ? 'CANCELLING...' : 'CANCEL RENDER'}
-              </button>
+            <div class="render-bottom-bar">
+              <div class="render-progress-card">
+                <div class="render-progress-header">
+                  <span class="render-stage-label">{smoothieStatusLabel()}</span>
+                  <div class="render-progress-stats">
+                    <span class="render-percent">{progress}%</span>
+                    <span
+                      class="render-eta"
+                      aria-label={`Estimated remaining: ${remainingTime}. Elapsed: ${elapsedTime}.`}
+                    ><span class="eta-time" aria-hidden="true">{remainingTime}</span><span class="elapsed-time" aria-hidden="true">{elapsedTime}</span></span>
+                  </div>
+                </div>
+                <div class="pro-track" class:paused={isRenderPaused}>
+                  <div class="pro-indeterminate-sweep"></div>
+                </div>
+              </div>
+
+              <div class="render-control-row">
+                <button
+                  class="btn-render-action"
+                  class:is-resume={isRenderPaused}
+                  onclick={toggleRenderPause}
+                  disabled={isCancellingRender}
+                  aria-label={isRenderPaused ? 'Resume render' : 'Pause render'}
+                >
+                  {#if isRenderPaused}
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z" fill="currentColor" /></svg>
+                  {:else}
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="0.75" fill="currentColor" /><rect x="14" y="5" width="4" height="14" rx="0.75" fill="currentColor" /></svg>
+                  {/if}
+                </button>
+                <button
+                  class="btn-render-action cancel-control"
+                  onclick={() => showRenderCancelConfirmation = true}
+                  disabled={isCancellingRender}
+                  aria-label="Cancel render"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="0.75" fill="currentColor" /></svg>
+                </button>
+              </div>
             </div>
           </div>
         {:else if isSmoothieComplete}
           <div class="pro-complete-card">
-            <div class="pro-output-box">
-              <span class="box-label">EXPORTED FILE</span>
-              <span class="box-path">{smoothieOutputPath.split(/[\\/]/).pop()}</span>
-            </div>
+            <button class="completion-preview" onclick={openSmoothieFile} aria-label="Open rendered video">
+              {#if smoothieOutputPreview || liveRenderPreview || smoothiePreviewSet?.cover}
+                <img src={smoothieOutputPreview || liveRenderPreview || smoothiePreviewSet.cover} alt="Preview of the rendered video" />
+              {:else}
+                <span class="completion-preview-loading">PREPARING PREVIEW</span>
+              {/if}
+            </button>
+            <span class="completion-output-name" title={smoothieOutputPath}>{smoothieOutputPath.split(/[\\/]/).pop()}</span>
 
             <div class="complete-actions-row">
-              <button class="btn-pro-secondary" onclick={openSmoothieFile}>OPEN FILE</button>
-              <button class="btn-pro-secondary" onclick={openSmoothieFolder}>REVEAL IN EXPLORER</button>
-              <button class="btn-pro-secondary" onclick={() => clearSmoothieSelection(true)}>NEW RENDER</button>
+              <button class="btn-pro-secondary completion-action" onclick={openSmoothieFolder}>REVEAL IN EXPLORER</button>
+              <button class="btn-pro-secondary completion-action" onclick={() => clearSmoothieSelection(true)}>NEW RENDER</button>
             </div>
           </div>
         {:else}
-          <div class="minimal-grid">
-            <!-- Video Summary Card -->
-            <div class="card">
-              <h3>VIDEO INFO</h3>
-              <div class="info-row"><span>File</span><span class="mono">{smoothiePath.split(/[\\/]/).pop()}</span></div>
-              <div class="info-row"><span>Resolution</span><span>{smoothieInfo.width} x {smoothieInfo.height}</span></div>
-              <div class="info-row"><span>Source FPS</span><span>{smoothieInfo.fps.toFixed(2)}</span></div>
-              <div class="info-row"><span>Duration</span><span>{smoothieInfo.duration.toFixed(2)}s</span></div>
-              <button class="btn-secondary" onclick={() => clearSmoothieSelection(false)}>CHANGE VIDEO</button>
-            </div>
-
-            <!-- Quick Action Card -->
-            <div class="card action-card">
-              <div class="card-header">
-                <h3>OUTPUT TARGET FPS</h3>
-                <button class="btn-icon-settings" onclick={() => showSmoothieSettings = true}>SETTINGS</button>
+          <div class="settings-workspace">
+            <section class="settings-unified-panel">
+              <div class="settings-source-stage">
+                <header class="settings-panel-header">
+                  <h3 class="settings-media-name" title={smoothiePath}>{smoothiePath.split(/[\\/]/).pop()}</h3>
+                </header>
+                <div class="source-preview" role="group" aria-label="Eight-frame source video preview" onmouseenter={() => startSourcePreviewCycle('smoothie')} onmouseleave={() => stopSourcePreviewCycle('smoothie')}>
+                  {#if smoothiePreviewSet?.frames?.[smoothiePreviewFrameIndex]}
+                    <img class="source-preview-cover" src={smoothiePreviewSet.frames[smoothiePreviewFrameIndex]} alt="Preview of selected source video" />
+                  {:else if smoothiePreviewSet?.cover}
+                    <img class="source-preview-cover" src={smoothiePreviewSet.cover} alt="Preview of selected source video" />
+                  {:else}
+                    <span class="source-preview-loading" aria-label="Preparing video preview"></span>
+                  {/if}
+                  <button class="settings-change-btn" onclick={() => clearSmoothieSelection(false)} aria-label="Choose another video">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h9m0 0-3-3m3 3-3 3M17 17H8m0 0 3 3m-3-3 3-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                </div>
               </div>
 
-              <!-- Output FPS Slider 20 to 60 FPS -->
-              <GlowSlider bind:value={smoothieSettings.fps} min={20} max={60} step={1} label="TARGET FPS:" unit=" FPS" />
+              <div class="settings-config-stage">
+                <header class="settings-panel-header">
+                  <h3 class="settings-title">settings</h3>
+                  <button class="btn-details" onclick={() => showSmoothieSettings = true}>DETAILS</button>
+                </header>
 
-              <div class="output-preview">
-                <span>Engine: smoothie-rs</span>
-                <span>LUT: {smoothieSettings.lutEnabled === 'yes' ? 'ON' : 'OFF'}</span>
+                <div class="settings-main-control">
+                  <GlowSlider bind:value={smoothieSettings.fps} min={20} max={60} step={1} label="" unit=" fps" editableMin={10} />
+                </div>
+
+                <div class="settings-blur-control">
+                  <GlowSlider bind:value={smoothieSettings.blendIntensity} min={0} max={4} step={0.1} precision={1} label="blur intensity" />
+                </div>
+
+                <button class="btn-pro-secondary settings-start" onclick={startSmoothie} disabled={anyProcessing}>
+                  {isSmoothieProcessing ? 'PROCESSING...' : 'START RENDER'}
+                </button>
               </div>
-
-              <button class="btn-primary" onclick={startSmoothie} disabled={anyProcessing}>
-                {isSmoothieProcessing ? 'PROCESSING...' : 'START RENDER'}
-              </button>
-            </div>
+            </section>
           </div>
         {/if}
       {/if}
@@ -1431,45 +1739,50 @@
     </div>
   {/if}
 
-  <!-- RIFE SETTINGS MODAL DRAWER -->
+  <!-- RIFE DETAILS MODAL -->
   {#if showRifeSettings}
     <div class="modal-backdrop" onclick={() => showRifeSettings = false} role="presentation">
-      <div class="modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
+      <div class="modal-card settings-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="rife-settings-title" tabindex="0">
         <div class="modal-header">
-          <h2>RIFE SETTINGS</h2>
-          <button class="btn-close-modal" onclick={() => showRifeSettings = false}>X</button>
+          <div class="settings-title-group">
+            <span class="settings-kicker">INTERPOLATION</span>
+            <h2 id="rife-settings-title">DETAILS</h2>
+          </div>
+          <button class="btn-close-modal" onclick={() => showRifeSettings = false} aria-label="Close interpolation settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+          </button>
         </div>
-        <div class="modal-body">
-          <div class="setting-group">
+        <div class="modal-body settings-body">
+          <div class="settings-section">
             <h3>CORE CONFIGURATION</h3>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-rife-mode" class="has-tooltip" data-tooltip="Slowmo extends video duration; Boost doubles FPS at normal speed.">MODE</label>
               <select id="mod-rife-mode" bind:value={rifeSettings.mode}>
                 <option value="boost">FPS Boost (same duration)</option>
                 <option value="slowmo">Slowmo (duration x factor)</option>
               </select>
             </div>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-rife-factor" class="has-tooltip" data-tooltip="Multiplier factor (2x to 10x).">FACTOR</label>
               <input id="mod-rife-factor" type="number" min="2" max="10" bind:value={rifeSettings.factor} />
             </div>
           </div>
 
-          <div class="setting-group">
+          <div class="settings-section">
             <h3>ADVANCED PARAMETERS</h3>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-rife-thresh" class="has-tooltip" data-tooltip="Threshold for detecting hard scene changes (0.01 - 0.50).">SCENE THRESHOLD</label>
               <input id="mod-rife-thresh" type="number" step="0.01" min="0.01" max="0.5" bind:value={rifeSettings.sceneThreshold} />
             </div>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-rife-blend" class="has-tooltip" data-tooltip="Crossfade frames at scene cuts (0 = hard cut).">BLEND CUTS</label>
               <input id="mod-rife-blend" type="number" step="1" min="0" max="30" bind:value={rifeSettings.blendCuts} />
             </div>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-rife-crf" class="has-tooltip" data-tooltip="H.264 CRF quality factor (18 = visually lossless).">CRF QUALITY</label>
               <input id="mod-rife-crf" type="number" step="1" min="0" max="51" bind:value={rifeSettings.crf} />
             </div>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-rife-preset" class="has-tooltip" data-tooltip="H.264 encoding preset speed vs compression ratio.">ENCODING PRESET</label>
               <select id="mod-rife-preset" bind:value={rifeSettings.preset}>
                 <option value="ultrafast">ultrafast</option>
@@ -1488,56 +1801,61 @@
     </div>
   {/if}
 
-  <!-- RENDER SETTINGS MODAL DRAWER -->
+  <!-- RENDER DETAILS MODAL -->
   {#if showSmoothieSettings}
     <div class="modal-backdrop" onclick={() => showSmoothieSettings = false} role="presentation">
-      <div class="modal-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
+      <div class="modal-card settings-card" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="smoothie-settings-title" tabindex="0">
         <div class="modal-header">
-          <h2>RENDER CONFIGURATION</h2>
-          <button class="btn-close-modal" onclick={() => showSmoothieSettings = false}>X</button>
+          <div class="settings-title-group">
+            <span class="settings-kicker">RENDER</span>
+            <h2 id="smoothie-settings-title">DETAILS</h2>
+          </div>
+          <button class="btn-close-modal" onclick={() => showSmoothieSettings = false} aria-label="Close render settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+          </button>
         </div>
-        <div class="modal-body">
-          <div class="setting-group">
+        <div class="modal-body settings-body">
+          <div class="settings-section">
             <h3>OUTPUT PARAMS</h3>
-            <div class="setting-row">
-              <label for="mod-sm-fps" class="has-tooltip" data-tooltip="Target frame blending output FPS.">OUTPUT FPS</label>
-              <input id="mod-sm-fps" type="number" min="20" max="60" bind:value={smoothieSettings.fps} />
+            <div class="setting-row settings-control">
+              <label for="mod-sm-fps" class="has-tooltip" data-tooltip="Target frame blending output fps.">output fps</label>
+              <input id="mod-sm-fps" type="number" min="10" max="60" bind:value={smoothieSettings.fps} />
             </div>
-            <div class="slider-row">
-              <GlowSlider bind:value={smoothieSettings.blendIntensity} min={0} max={4} step={0.1} precision={1} label="BLEND INTENSITY:" />
+            <div class="slider-row settings-slider">
+              <GlowSlider bind:value={smoothieSettings.blendIntensity} min={0} max={4} step={0.1} precision={1} label="blur intensity" />
             </div>
           </div>
 
-          <div class="setting-group">
+          <div class="settings-section">
             <h3>COLOR GRADING</h3>
-            <div class="slider-row">
+            <div class="slider-row settings-slider">
               <div class="slider-header"><span class="slider-label">BRIGHTNESS:</span><span class="slider-val">{smoothieSettings.brightness}</span></div>
               <input type="range" min="0.0" max="2.0" step="0.05" bind:value={smoothieSettings.brightness} class="custom-slider" />
             </div>
-            <div class="slider-row">
+            <div class="slider-row settings-slider">
               <div class="slider-header"><span class="slider-label">SATURATION:</span><span class="slider-val">{smoothieSettings.saturation}</span></div>
               <input type="range" min="0.0" max="2.0" step="0.05" bind:value={smoothieSettings.saturation} class="custom-slider" />
             </div>
-            <div class="slider-row">
+            <div class="slider-row settings-slider">
               <div class="slider-header"><span class="slider-label">CONTRAST:</span><span class="slider-val">{smoothieSettings.contrast}</span></div>
               <input type="range" min="0.0" max="2.0" step="0.05" bind:value={smoothieSettings.contrast} class="custom-slider" />
             </div>
           </div>
 
-          <div class="setting-group">
+          <div class="settings-section">
             <h3>LUT &amp; DISPLAY</h3>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-sm-lutenable" class="has-tooltip" data-tooltip="Enable colorcia.cube LUT application.">LUT ENABLED</label>
               <select id="mod-sm-lutenable" bind:value={smoothieSettings.lutEnabled}>
                 <option value="yes">yes</option>
                 <option value="no">no</option>
               </select>
             </div>
-            <div class="slider-row">
+            <div class="slider-row settings-slider">
               <div class="slider-header"><span class="slider-label">LUT OPACITY:</span><span class="slider-val">{(smoothieSettings.lutOpacity * 100).toFixed(0)}%</span></div>
               <input type="range" min="0.0" max="1.0" step="0.05" bind:value={smoothieSettings.lutOpacity} class="custom-slider" />
             </div>
-            <div class="setting-row">
+            <div class="setting-row settings-control">
               <label for="mod-sm-borderless" class="has-tooltip" data-tooltip="Window borderless console toggle.">BORDERLESS</label>
               <select id="mod-sm-borderless" bind:value={smoothieSettings.borderless}>
                 <option value="yes">yes</option>
@@ -1583,11 +1901,8 @@
               </div>
               <div class="pro-progress-row">
                 <div class="pro-track">
-                  <div class="pro-fill" style="width: {updateContentLength > 0 ? Math.min(100, (updateDownloadedBytes / updateContentLength) * 100) : 0}%"></div>
+                  <div class="pro-indeterminate-sweep"></div>
                 </div>
-                <span class="pro-percent-readout">
-                  {updateContentLength > 0 ? Math.round((updateDownloadedBytes / updateContentLength) * 100) : 0}%
-                </span>
               </div>
               <div class="update-bytes-readout">
                 {formatBytes(updateDownloadedBytes)} / {updateContentLength > 0 ? formatBytes(updateContentLength) : '...'}
@@ -1640,6 +1955,23 @@
     overflow: hidden;
     user-select: none;
   }
+
+  :global(*) {
+    scrollbar-width: thin;
+    scrollbar-color: #27272a transparent;
+  }
+
+  :global(::-webkit-scrollbar) {
+    width: 6px;
+    height: 6px;
+  }
+
+  :global(::-webkit-scrollbar-track) { background: transparent; }
+  :global(::-webkit-scrollbar-thumb) {
+    background: #27272a;
+    border-radius: 999px;
+  }
+  :global(::-webkit-scrollbar-thumb:hover) { background: #71717a; }
 
   .app-root {
     display: flex;
@@ -1757,7 +2089,8 @@
   .content-area {
     flex: 1;
     min-height: 0;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
     padding: 16px;
     background: #050507;
     display: flex;
@@ -2256,67 +2589,192 @@
     font-weight: 700;
   }
 
-  /* Minimal Cards Grid */
-  .minimal-grid {
+  /* Primary settings workspace */
+  .settings-workspace {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    margin: auto 0;
+  }
+
+  .settings-unified-panel {
+    width: 100%;
+    max-width: 860px;
+    min-height: 0;
+    padding: 20px 24px;
+    background: #08080a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 16px;
-    align-content: center;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 28px;
+    align-items: center;
   }
 
-  .card {
-    background: #09090c;
-    border: 1px solid #1c1c20;
-    border-radius: 8px;
-    padding: 18px;
-    transition: all 0.2s ease;
+  .settings-source-stage {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
   }
 
-  .card:hover { border-color: rgba(255, 255, 255, 0.18); }
+  .settings-config-stage {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding-top: 0;
+    border-top: none;
+  }
 
-  .card h3 {
-    margin: 0 0 16px;
-    font-size: 11px;
+  .settings-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .settings-media-name {
+    margin: 0;
+    min-width: 0;
+    color: #ffffff;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .settings-title {
+    margin: 0;
+    color: #d4d4d8;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .source-preview {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    margin-top: 12px;
+    overflow: hidden;
+    background: #050507;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+  }
+
+  .source-preview-cover,
+  .source-preview-loading {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .source-preview-cover {
+    object-fit: cover;
+  }
+
+  .source-preview-loading {
+    background: linear-gradient(100deg, #09090c 18%, #19191e 42%, #09090c 66%);
+    background-size: 220% 100%;
+    animation: preview-loading-sweep 1.1s linear infinite;
+  }
+
+  @keyframes preview-loading-sweep {
+    0% { background-position: 100% 0; }
+    100% { background-position: -120% 0; }
+  }
+
+  .settings-change-btn {
+    position: absolute;
+    top: 9px;
+    right: 9px;
+    z-index: 1;
+    display: grid;
+    width: 31px;
+    height: 31px;
+    place-items: center;
+    padding: 0;
+    background: rgba(9, 9, 12, 0.8);
+    border: 0;
+    border-radius: 5px;
+    color: #a1a1aa;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    opacity: 0.42;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  }
+
+  .settings-change-btn svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .settings-change-btn:hover {
+    background: rgba(24, 24, 27, 0.92);
+    border-color: rgba(255, 255, 255, 0.55);
+    color: #ffffff;
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+
+  .source-preview:hover .settings-change-btn { opacity: 0.72; }
+
+  .btn-details {
+    flex: none;
+    padding: 5px 9px;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    color: #d4d4d8;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #71717a;
-  }
-
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-  }
-
-  .card-header h3 { margin: 0; }
-
-  .btn-icon-settings {
-    background: #141417;
-    color: #e4e4e7;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
   }
 
-  .btn-icon-settings:hover {
-    border-color: rgba(255, 255, 255, 0.35);
-    background: #1c1c20;
+  .btn-details:hover {
+    background: #141417;
+    border-color: rgba(255, 255, 255, 0.4);
+    color: #ffffff;
   }
 
-  .info-row, .setting-row {
+  .settings-main-control { margin-top: 18px; }
+
+  .settings-blur-control { margin-top: 16px; }
+
+  .settings-config-stage .auto-render-toggle {
+    margin: 16px 0 0;
+  }
+
+  .settings-start {
+    width: 100%;
+    min-height: 38px;
+    margin-top: 20px;
+    padding: 9px 18px;
+    box-shadow: none;
+  }
+
+  @media (max-width: 680px) {
+    .settings-unified-panel { padding: 18px; }
+  }
+
+  .setting-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
   }
 
-  .info-row span:first-child, .setting-row label {
+  .setting-row label {
     color: #888888;
     font-size: 12px;
     font-weight: 600;
@@ -2407,16 +2865,6 @@
     transform: scale(1.1);
   }
 
-  .mono {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 12px;
-    max-width: 60%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #e4e4e7;
-  }
-
   .setting-row select, .setting-row input[type="number"] {
     background: #050507;
     border: 1px solid #27272a;
@@ -2433,25 +2881,13 @@
     border-color: rgba(255, 255, 255, 0.4);
   }
 
-  .output-preview {
-    display: flex;
-    justify-content: space-between;
-    margin: 16px 0;
-    padding: 10px;
-    background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    font-size: 12px;
-    color: #a1a1aa;
-  }
-
   /* Buttons */
   .btn-primary {
     width: 100%;
     padding: 12px;
     background: #18181b;
     color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 0;
     border-radius: 6px;
     font-weight: 700;
     font-size: 12px;
@@ -2472,7 +2908,7 @@
     margin-top: 10px;
     padding: 8px 14px;
     background: #141417;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    border: 0;
     border-radius: 6px;
     color: #d4d4d8;
     cursor: pointer;
@@ -2494,7 +2930,7 @@
     padding: 20px 22px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
     height: 100%;
     min-height: 380px;
   }
@@ -2502,7 +2938,7 @@
   .pro-header {
     display: flex;
     align-items: center;
-    padding-bottom: 2px;
+    min-width: 0;
   }
 
   .pro-filename {
@@ -2516,100 +2952,267 @@
     text-overflow: ellipsis;
   }
 
-  /* Pipeline Transformation Box */
+  /* Source-to-target job summary */
   .pro-pipeline-box {
     display: flex;
     align-items: center;
-    gap: 14px;
-    background: #0c0c0f;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
-    padding: 12px 16px;
   }
 
-  .pipeline-node {
+  .fps-signature {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .fps-value {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    color: #ffffff;
+  }
+
+  .fps-transition {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    margin: 0 3px;
+  }
+
+  .fps-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #e4e4e7;
+    opacity: 0.35;
+    animation: fps-dot-wave 1.05s ease-in-out infinite;
+  }
+
+  .fps-dot:nth-child(2) { animation-delay: 0.14s; }
+  .fps-dot:nth-child(3) { animation-delay: 0.28s; }
+  .fps-transition.paused .fps-dot { animation-play-state: paused; }
+
+  @keyframes fps-dot-wave {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  .fps-unit {
+    margin-left: -3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #a1a1aa;
+  }
+
+  .render-processing-card {
+    min-height: 0;
+    padding: 22px 24px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
-  }
-
-  .node-label {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    color: #71717a;
-  }
-
-  .node-val {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 12px;
-    font-weight: 700;
-    color: #e4e4e7;
-  }
-
-  .pipeline-arrow {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #71717a;
-    padding: 0 4px;
-  }
-
-  .pipeline-tags {
-    margin-left: auto;
-    display: flex;
-    gap: 6px;
-  }
-
-  .chip {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    color: #a1a1aa;
-    background: #141417;
-    border: 1px solid #27272a;
-    border-radius: 4px;
-    padding: 3px 8px;
-  }
-
-  /* Telemetry Grid (3 Balanced Columns) */
-  .pro-telemetry-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    justify-content: space-between;
     gap: 12px;
   }
 
-  .telemetry-cell {
-    background: #0c0c0f;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
-    padding: 12px 16px;
+  .render-processing-header {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
   }
 
-  .telemetry-label {
-    font-size: 9px;
+  .render-processing-header .pro-filename {
+    max-width: 100%;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
+
+  .render-processing-header .fps-signature {
+    margin-top: 0;
+  }
+
+  .render-preview-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding-left: 56px;
+    margin: -6px 0 2px;
+    overflow: hidden;
+  }
+
+  .live-render-preview {
+    position: relative;
+    top: -10px;
+    left: -5px;
+    max-width: min(100%, 475px);
+    max-height: 262px;
+    height: 100%;
+    width: auto;
+    aspect-ratio: 16 / 9;
+    border-radius: 0;
+    overflow: hidden;
+    background: #050507;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.3);
+    flex-shrink: 0;
+  }
+
+  .live-render-preview img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .live-preview-loading {
+    position: absolute;
+    inset: 0;
+    display: block;
+    background: linear-gradient(100deg, #09090c 18%, #19191e 42%, #09090c 66%);
+    background-size: 220% 100%;
+    animation: preview-loading-sweep 1.1s linear infinite;
+  }
+
+  .render-bottom-bar {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    width: 100%;
+    margin-top: auto;
+  }
+
+  .render-progress-card {
+    flex: 1;
+    min-width: 0;
+    background: #08080a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 12px 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 9px;
+  }
+
+  .render-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    line-height: 1;
+  }
+
+  .render-stage-label {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #71717a;
+    color: #e4e4e7;
+    text-transform: uppercase;
   }
 
-  .telemetry-val {
-    font-size: 13px;
-    font-weight: 700;
-    color: #ffffff;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .render-progress-stats {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
   }
 
-  .telemetry-val.mono {
+  .render-percent {
     font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 800;
+    color: #ffffff;
   }
 
-  .telemetry-val.highlight {
+  .render-eta {
+    display: inline-block;
+    min-width: 5ch;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #a1a1aa;
+    white-space: nowrap;
+    cursor: default;
+    transition: color 0.15s ease;
+  }
+
+  .render-eta:hover {
     color: #ffffff;
+  }
+
+  .render-eta:hover .eta-time { display: none; }
+  .render-eta:hover .elapsed-time { display: inline; }
+
+  .render-bottom-bar .pro-track {
+    height: 4px;
+    background: #050507;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+  }
+
+  .render-bottom-bar .render-control-row {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .btn-render-action {
+    display: grid;
+    place-items: center;
+    width: 62px;
+    min-width: 62px;
+    height: 100%;
+    min-height: 52px;
+    padding: 0;
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    color: #ffffff;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  }
+
+  .btn-render-action svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .btn-render-action:hover:not(:disabled) {
+    background: #18181c;
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #ffffff;
+  }
+
+  .btn-render-action:focus-visible {
+    outline: 1px solid #ffffff;
+    outline-offset: 2px;
+  }
+
+  .btn-render-action:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .btn-render-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  @media (max-width: 680px) {
+    .pro-render-card { padding: 16px; }
+    .fps-value { font-size: 18px; }
+    .render-processing-card { padding: 16px; }
+    .render-preview-stage { padding-left: 0; margin: 4px 0; }
+    .live-render-preview { width: 100%; max-height: 220px; }
+    .btn-render-action { width: 50px; min-width: 50px; }
   }
 
   .auto-render-toggle {
@@ -2663,6 +3266,7 @@
     display: flex;
     justify-content: space-between;
     align-items: baseline;
+    gap: 12px;
   }
 
   .progress-stage-name {
@@ -2680,6 +3284,31 @@
     color: #ffffff;
   }
 
+  .progress-summary {
+    display: flex;
+    flex: none;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .progress-time {
+    display: inline-block;
+    min-width: 5ch;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #a1a1aa;
+    cursor: default;
+    white-space: nowrap;
+    transition: color 0.15s ease;
+  }
+
+  .elapsed-time { display: none; }
+  .progress-time:hover .eta-time { display: none; }
+  .progress-time:hover .elapsed-time { display: inline; }
+  .progress-time:hover { color: #ffffff; }
+
   .pro-track {
     position: relative;
     width: 100%;
@@ -2690,24 +3319,21 @@
     overflow: hidden;
   }
 
-  .pro-fill {
-    height: 100%;
-    background: #ffffff;
-    border-radius: 4px;
-    transition: width 0.15s linear;
-  }
-
-  .pro-fill-encoding {
+  .pro-indeterminate-sweep {
     position: absolute;
     top: 0;
     bottom: 0;
     width: 40%;
     background: linear-gradient(90deg, transparent, #ffffff 50%, transparent);
     border-radius: 4px;
-    animation: encoding-sweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    animation: progress-sweep 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   }
 
-  @keyframes encoding-sweep {
+  .pro-track.paused .pro-indeterminate-sweep {
+    animation-play-state: paused;
+  }
+
+  @keyframes progress-sweep {
     0% { transform: translateX(-100%); }
     100% { transform: translateX(350%); }
   }
@@ -2723,64 +3349,99 @@
 
   /* Professional Complete Card */
   .pro-complete-card {
-    background: #09090c;
-    border: 1px solid #1c1c20;
-    border-radius: 8px;
-    padding: 24px;
+    background: #08080a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 28px;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     justify-content: center;
-    gap: 20px;
+    gap: 16px;
     height: 100%;
     min-height: 380px;
   }
 
-  .pro-output-box {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
+  .completion-preview {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: min(100%, 460px);
+    aspect-ratio: 16 / 9;
+    margin: 0 auto;
+    padding: 0;
+    overflow: hidden;
     background: #050507;
-    border: 1px solid #1c1c20;
-    border-radius: 6px;
-    padding: 12px 24px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: #ffffff;
+    cursor: pointer;
+    transition: border-color 0.16s ease, transform 0.16s ease;
+  }
+
+  .completion-preview:hover {
+    border-color: rgba(255, 255, 255, 0.42);
+    transform: translateY(-1px);
+  }
+
+  .completion-preview img {
     width: 100%;
-    max-width: 460px;
+    height: 100%;
+    object-fit: contain;
   }
 
-  .box-label {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+  .completion-preview-loading {
     color: #71717a;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
   }
 
-  .box-path {
+  .completion-output-name {
+    display: block;
+    width: min(100%, 460px);
+    margin: -6px auto 0;
+    overflow: hidden;
+    color: #a1a1aa;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 12px;
+    font-size: 10px;
     font-weight: 700;
-    color: #e4e4e7;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .completion-error {
+    width: 100%;
     max-width: 460px;
+    margin: 0 auto;
     color: #d4d4d8;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     line-height: 1.45;
-    text-align: center;
+    text-align: left;
   }
 
   .complete-actions-row {
     display: flex;
-    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+    max-width: 460px;
+    margin: 2px auto 0;
+  }
+
+  .completion-action {
+    min-height: 38px;
+    padding: 9px 14px;
   }
 
   .btn-pro-primary {
     background: #ffffff;
     color: #000000;
-    border: 1px solid #ffffff;
+    border: 0;
     border-radius: 4px;
     padding: 9px 18px;
     font-size: 11px;
@@ -2797,7 +3458,7 @@
   .btn-pro-secondary {
     background: #141417;
     color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 0;
     border-radius: 4px;
     padding: 9px 18px;
     font-size: 11px;
@@ -2817,10 +3478,42 @@
     opacity: 0.45;
   }
 
-  .danger-action:hover {
+  .btn-pro-icon {
+    width: 74px;
+    height: 67px;
+    display: grid;
+    place-items: center;
+    padding: 0;
     background: #18181b;
-    border-color: #ffffff;
     color: #ffffff;
+    border: 0;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  }
+
+  .btn-pro-icon svg {
+    width: 31px;
+    height: 31px;
+  }
+
+  .btn-pro-icon:hover:not(:disabled) {
+    background: #242429;
+    color: #a1a1aa;
+  }
+
+  .btn-pro-icon:focus-visible {
+    outline: 1px solid #ffffff;
+    outline-offset: 2px;
+  }
+
+  .btn-pro-icon:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .btn-pro-icon:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
   }
 
   /* Modal Settings Overlay Drawer */
@@ -2883,24 +3576,141 @@
     flex: 1;
   }
 
-  .setting-group {
-    margin-bottom: 20px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid #1c1c20;
+  .settings-card {
+    width: 600px;
+    background: #08080a;
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.72);
   }
 
-  .setting-group:last-child {
-    border-bottom: none;
-    margin-bottom: 0;
-    padding-bottom: 0;
+  .settings-card .modal-header {
+    padding: 20px 20px 14px;
+    background: transparent;
+    border-bottom: 0;
   }
 
-  .setting-group h3 {
+  .settings-title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .settings-kicker {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #71717a;
+  }
+
+  .settings-card .modal-header h2 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+
+  .settings-card .btn-close-modal {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+  }
+
+  .settings-card .btn-close-modal svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+  }
+
+  .settings-card .btn-close-modal:hover {
+    background: #141417;
+    border-color: #27272a;
+  }
+
+  .settings-body {
+    display: grid;
+    gap: 10px;
+    padding: 0 20px 20px;
+  }
+
+  .settings-section {
+    margin: 0;
+    padding: 14px 16px;
+    background: #0c0c0f;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+  }
+
+  .settings-section h3 {
+    margin: 0 0 8px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: #71717a;
+  }
+
+  .settings-section .setting-row,
+  .settings-section .slider-row {
+    margin: 0;
+    padding: 10px 0;
+  }
+
+  .settings-section :is(.setting-row, .slider-row) + :is(.setting-row, .slider-row) {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .settings-section .setting-row {
+    min-height: 42px;
+  }
+
+  .settings-section .setting-row label,
+  .settings-section .slider-label {
+    font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #71717a;
-    margin-bottom: 14px;
+    color: #a1a1aa;
+  }
+
+  .settings-section .setting-row select,
+  .settings-section .setting-row input[type="number"] {
+    min-width: 174px;
+    background: #08080a;
+    border-color: #27272a;
+    border-radius: 4px;
+    color: #ffffff;
+  }
+
+  .settings-card .modal-footer {
+    padding: 0 20px 20px;
+    background: transparent;
+    border-top: 0;
+  }
+
+  .settings-card .modal-footer .btn-secondary,
+  .settings-card .modal-footer .btn-primary-modal {
+    min-height: 38px;
+    border-radius: 4px;
+  }
+
+  .settings-card .btn-primary-modal {
+    background: #141417;
+    border: 0;
+    color: #ffffff;
+  }
+
+  .settings-card .btn-primary-modal:hover {
+    background: #1c1c20;
+    border-color: rgba(255, 255, 255, 0.4);
+    color: #ffffff;
   }
 
   .modal-footer {
@@ -2915,7 +3725,7 @@
   .btn-primary-modal {
     background: #ffffff;
     color: #000000;
-    border: 1px solid #ffffff;
+    border: 0;
     border-radius: 6px;
     padding: 8px 18px;
     font-size: 11px;
@@ -2941,7 +3751,7 @@
   .confirmation-copy p:last-child { margin-bottom: 0; }
   .btn-danger-modal {
     padding: 8px 18px;
-    border: 1px solid #ffffff;
+    border: 0;
     border-radius: 6px;
     background: #000000;
     color: #ffffff;

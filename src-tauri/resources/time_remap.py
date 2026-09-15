@@ -1,4 +1,5 @@
 import argparse
+import glob
 import json
 import os
 import subprocess
@@ -104,19 +105,27 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         python, os.path.join(rife_directory, "inference_video.py"),
         "--video", source, "--multi", str(interpolation_factor),
     ]
+    rife_started = time.time()
     subprocess.run(rife_command, shell=False, cwd=rife_directory, check=True)
 
-    raw_interpolation = os.path.join(
-        output_directory, f"{base_name}_{interpolation_factor}X_{round(input_fps * factor)}fps.mp4"
-    )
-    if not os.path.exists(raw_interpolation):
-        raw_interpolation = os.path.join(
-            rife_directory, f"{base_name}_{interpolation_factor}X_{round(input_fps * factor)}fps.mp4"
+    # RIFE determines FPS from the decoded stream. For variable-frame-rate input,
+    # that can differ from ffprobe's nominal r_frame_rate used by this script.
+    # Find the fresh output RIFE actually created instead of reconstructing its FPS.
+    raw_candidates = []
+    output_name_pattern = f"{base_name}_{interpolation_factor}X_*fps.mp4"
+    for directory in dict.fromkeys([output_directory, rife_directory]):
+        for candidate in glob.glob(os.path.join(directory, output_name_pattern)):
+            if os.path.isfile(candidate) and os.path.getmtime(candidate) >= rife_started - 1:
+                raw_candidates.append(candidate)
+    if not raw_candidates:
+        raise FileNotFoundError(
+            f"Raw RIFE output missing after interpolation: {output_name_pattern}"
         )
-    if not os.path.isfile(raw_interpolation):
-        raise FileNotFoundError(f"Raw RIFE output missing: {raw_interpolation}")
+    raw_interpolation = max(raw_candidates, key=os.path.getmtime)
+    print(f"[cia render] RIFE output detected: {raw_interpolation}", flush=True)
 
-    print(f"\n[*] Finalizing output with FFmpeg (CRF {crf}, Preset {preset})...")
+    total_frames = max(1, int(round(target_duration * output_fps)))
+    print(f"\n[cia render] Finalizing output with FFmpeg (CRF {crf}, Preset {preset})...", flush=True)
     command = [ffmpeg_exe, "-y", "-i", raw_interpolation]
     video_filter = []
     audio_flags = []
@@ -149,6 +158,13 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
     command.extend(["-r", str(output_fps)])
     command.extend(audio_flags)
     command.extend(subtitle_flags)
+    command.extend([
+        "-map_metadata", "-1",
+        "-progress", "pipe:1",
+        "-stats_period", "0.2",
+        final_output,
+    ])
+
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -157,11 +173,52 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         bufsize=1,
         universal_newlines=True,
     )
-    for line in proc.stdout:
-        print(line, end="", flush=True)
+    cur_frame = 0
+    cur_fps = 0.0
+    cur_speed = "1x"
+    cur_time = "00:00:00"
+    log_buffer = []
+
+    for raw_line in proc.stdout:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "=" in line:
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if key == "frame":
+                try:
+                    cur_frame = int(val)
+                except ValueError:
+                    pass
+            elif key == "fps":
+                try:
+                    cur_fps = float(val)
+                except ValueError:
+                    pass
+            elif key == "speed":
+                cur_speed = val.replace(" ", "")
+            elif key == "out_time":
+                cur_time = val.split(".")[0]
+            elif key == "progress":
+                pct = min(100, max(0, int(round((cur_frame / total_frames) * 100)))) if total_frames > 0 else 0
+                if val == "end":
+                    pct = 100
+                    cur_frame = total_frames
+                print(
+                    f"[cia render] ENCODING frame={cur_frame} total_frames={total_frames} fps={cur_fps:.1f} time={cur_time} speed={cur_speed} pct={pct}%",
+                    flush=True,
+                )
+        else:
+            log_buffer.append(line)
+            if len(log_buffer) > 50:
+                log_buffer.pop(0)
+
     proc.wait()
     if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg encoding failed with code {proc.returncode}")
+        err_msg = "\n".join(log_buffer)
+        raise RuntimeError(f"FFmpeg encoding failed with code {proc.returncode}:\n{err_msg}")
     if os.path.exists(raw_interpolation):
         os.remove(raw_interpolation)
 

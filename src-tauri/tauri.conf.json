@@ -1,6 +1,6 @@
 {
   "productName": "cia render",
-  "version": "1.11.0",
+  "version": "1.2.0",
   "identifier": "io.github.cia213.ciaapp",
   "build": {
     "beforeDevCommand": "npm run dev",
