@@ -34,7 +34,7 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia render v${version}\n- Redesigned industrial render processing layout with native aspect ratio preview\n- Real-time percentage progress bar during Render (Smoothie) pipeline\n- Real-time encoding progress bar and telemetry during RIFE output finalization\n- Synchronized telemetry with live framerate, elapsed time, and ETA\n- Instant completion preview with zero-delay cached cover recall`,
+  notes: `cia render v${version}\n- Fix FFmpeg binary resolution for Practical-RIFE (skvideo) on systems without global FFmpeg PATH\n- Ensure isolated bundled media tools runtime propagation to child Python processes`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {

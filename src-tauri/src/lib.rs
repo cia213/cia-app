@@ -1544,6 +1544,14 @@ async fn run_time_remap(
     let out_path = reservation.output.clone();
 
     let mut command = Command::new(&runtime.python);
+    if let Some(ffmpeg_dir) = runtime.media.ffmpeg.parent() {
+        let current_path = env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![ffmpeg_dir.to_path_buf()];
+        paths.extend(env::split_paths(&current_path));
+        if let Ok(new_path) = env::join_paths(paths) {
+            command.env("PATH", new_path);
+        }
+    }
     command
         .arg(&runtime.script)
         .arg("--video")

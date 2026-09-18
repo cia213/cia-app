@@ -64,9 +64,21 @@ def build_atempo_filter(speed):
     return ",".join(filters)
 
 
+def ensure_tools_in_path(*tools):
+    current_path = os.environ.get("PATH", "")
+    parts = current_path.split(os.pathsep) if current_path else []
+    for tool in tools:
+        if tool and os.path.isfile(tool):
+            tool_dir = os.path.dirname(os.path.abspath(tool))
+            if tool_dir not in parts:
+                parts.insert(0, tool_dir)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
 def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.05,
                        blend_cuts=0, crf=18, preset="fast", output_path=None,
                        ffmpeg_exe="ffmpeg", ffprobe_exe="ffprobe", rife_dir=None):
+    ensure_tools_in_path(ffmpeg_exe, ffprobe_exe)
     source = os.path.abspath(video_path)
     if not os.path.isfile(source):
         raise FileNotFoundError(f"Video not found: {source}")
@@ -106,7 +118,7 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         "--video", source, "--multi", str(interpolation_factor),
     ]
     rife_started = time.time()
-    subprocess.run(rife_command, shell=False, cwd=rife_directory, check=True)
+    subprocess.run(rife_command, shell=False, cwd=rife_directory, env=os.environ.copy(), check=True)
 
     # RIFE determines FPS from the decoded stream. For variable-frame-rate input,
     # that can differ from ffprobe's nominal r_frame_rate used by this script.
@@ -241,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("--ffprobe", required=True)
     parser.add_argument("--rife-dir", required=True)
     args = parser.parse_args()
+    ensure_tools_in_path(args.ffmpeg, args.ffprobe)
     process_time_remap(
         video_path=args.video,
         mode=args.mode,
