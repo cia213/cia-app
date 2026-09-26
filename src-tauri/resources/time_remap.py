@@ -4,7 +4,20 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import traceback
+
+
+def strip_unc(path_str):
+    if not path_str:
+        return ""
+    s = str(path_str)
+    if s.startswith(r"\\?\UNC\\") or s.startswith(r"\\?\UNC/"):
+        return r"\\" + s[8:]
+    if s.startswith(r"\\?\"):
+        return s[4:]
+    return s
 
 
 def run_command(args, cwd=None):
@@ -65,21 +78,26 @@ def build_atempo_filter(speed):
 
 
 def ensure_tools_in_path(*tools):
-    current_path = os.environ.get("PATH", "")
-    parts = current_path.split(os.pathsep) if current_path else []
+    current_path = os.environ.get("PATH", "") or os.environ.get("Path", "")
+    parts = [strip_unc(p) for p in current_path.split(os.pathsep) if p]
     for tool in tools:
-        if tool and os.path.isfile(tool):
-            tool_dir = os.path.dirname(os.path.abspath(tool))
-            if tool_dir not in parts:
-                parts.insert(0, tool_dir)
-    os.environ["PATH"] = os.pathsep.join(parts)
+        if not tool:
+            continue
+        cleaned = strip_unc(str(tool))
+        tool_dir = os.path.dirname(os.path.abspath(cleaned)) if os.path.isfile(cleaned) else os.path.abspath(cleaned)
+        tool_dir = strip_unc(tool_dir)
+        if tool_dir and os.path.isdir(tool_dir) and tool_dir not in parts:
+            parts.insert(0, tool_dir)
+    joined = os.pathsep.join(parts)
+    os.environ["PATH"] = joined
+    os.environ["Path"] = joined
 
 
 def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.05,
                        blend_cuts=0, crf=18, preset="fast", output_path=None,
                        ffmpeg_exe="ffmpeg", ffprobe_exe="ffprobe", rife_dir=None):
     ensure_tools_in_path(ffmpeg_exe, ffprobe_exe)
-    source = os.path.abspath(video_path)
+    source = os.path.abspath(strip_unc(video_path))
     if not os.path.isfile(source):
         raise FileNotFoundError(f"Video not found: {source}")
     if output_path is None:
@@ -95,30 +113,67 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         output_fps = round(input_fps)
         target_duration = info["duration"] * factor
 
-    final_output = os.path.abspath(output_path)
+    final_output = os.path.abspath(strip_unc(output_path))
     output_directory = os.path.dirname(final_output)
     base_name = os.path.splitext(os.path.basename(source))[0]
     rife_directory = os.path.abspath(
-        rife_dir or os.path.join(os.path.dirname(__file__), "Practical-RIFE")
+        strip_unc(rife_dir) if rife_dir else os.path.join(os.path.dirname(__file__), "Practical-RIFE")
     )
     python = sys.executable
 
-    print("=== TIME-REMAP PIPELINE (RIFE 4.26) ===")
-    print(f"Input Video     : {source}")
-    print(f"Input Specs     : {info['width']}x{info['height']} @ {input_fps:.2f} FPS ({info['duration']:.2f}s)")
-    print(f"Pipeline Mode   : {mode.upper()} ({interpolation_factor}x)")
-    print(f"Output Specs    : {output_fps} FPS (Target duration: {target_duration:.2f}s)")
+    print("=== TIME-REMAP PIPELINE (RIFE 4.26) ===", flush=True)
+    print(f"Input Video     : {source}", flush=True)
+    print(f"Input Specs     : {info['width']}x{info['height']} @ {input_fps:.2f} FPS ({info['duration']:.2f}s)", flush=True)
+    print(f"Pipeline Mode   : {mode.upper()} ({interpolation_factor}x)", flush=True)
+    print(f"Output Specs    : {output_fps} FPS (Target duration: {target_duration:.2f}s)", flush=True)
     cuts = detect_scene_changes(source, scene_threshold, ffmpeg_exe)
-    print(f"Scene Detection : {len(cuts)} scene cuts detected (Threshold: {scene_threshold}, Blend cuts: {blend_cuts})")
+    print(f"Scene Detection : {len(cuts)} scene cuts detected (Threshold: {scene_threshold}, Blend cuts: {blend_cuts})", flush=True)
 
     started = time.time()
-    print("\n[*] Running RIFE 4.26 Frame Interpolation...")
+    print("\n[*] Running RIFE 4.26 Frame Interpolation...", flush=True)
     rife_command = [
         python, os.path.join(rife_directory, "inference_video.py"),
         "--video", source, "--multi", str(interpolation_factor),
     ]
     rife_started = time.time()
-    subprocess.run(rife_command, shell=False, cwd=rife_directory, env=os.environ.copy(), check=True)
+
+    all_stderr = []
+    proc = subprocess.Popen(
+        rife_command,
+        cwd=rife_directory,
+        env=os.environ.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    def stream_stderr():
+        for line in proc.stderr:
+            all_stderr.append(line)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    def stream_stdout():
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    t_err = threading.Thread(target=stream_stderr, daemon=True)
+    t_out = threading.Thread(target=stream_stdout, daemon=True)
+    t_err.start()
+    t_out.start()
+    proc.wait()
+    t_err.join(timeout=5)
+    t_out.join(timeout=5)
+
+    if proc.returncode != 0:
+        err_dump = "".join(all_stderr).strip()
+        sys.stderr.write(f"\n[RIFE ERROR] inference_video.py failed with code {proc.returncode}:\n{err_dump}\n")
+        sys.stderr.flush()
+        raise RuntimeError(f"RIFE inference failed (code {proc.returncode}): {err_dump or 'Abnormal child termination'}")
 
     # RIFE determines FPS from the decoded stream. For variable-frame-rate input,
     # that can differ from ffprobe's nominal r_frame_rate used by this script.
@@ -235,35 +290,40 @@ def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.
         os.remove(raw_interpolation)
 
     elapsed = time.time() - started
-    print(f"\n[OK] COMPLETE: Output saved to {final_output} (Processing time: {elapsed:.1f}s)")
+    print(f"\n[OK] COMPLETE: Output saved to {final_output} (Processing time: {elapsed:.1f}s)", flush=True)
     return final_output
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="cia render RIFE orchestration")
-    parser.add_argument("--video", required=True)
-    parser.add_argument("--mode", choices=["slowmo", "boost"], default="slowmo")
-    parser.add_argument("--factor", type=float, default=2.0)
-    parser.add_argument("--scene_threshold", type=float, default=0.05)
-    parser.add_argument("--blend-cuts", type=int, default=0)
-    parser.add_argument("--crf", type=int, default=18)
-    parser.add_argument("--preset", default="fast")
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--ffmpeg", required=True)
-    parser.add_argument("--ffprobe", required=True)
-    parser.add_argument("--rife-dir", required=True)
-    args = parser.parse_args()
-    ensure_tools_in_path(args.ffmpeg, args.ffprobe)
-    process_time_remap(
-        video_path=args.video,
-        mode=args.mode,
-        factor=args.factor,
-        scene_threshold=args.scene_threshold,
-        blend_cuts=args.blend_cuts,
-        crf=args.crf,
-        preset=args.preset,
-        output_path=args.output,
-        ffmpeg_exe=args.ffmpeg,
-        ffprobe_exe=args.ffprobe,
-        rife_dir=args.rife_dir,
-    )
+    try:
+        parser = argparse.ArgumentParser(description="cia render RIFE orchestration")
+        parser.add_argument("--video", required=True)
+        parser.add_argument("--mode", choices=["slowmo", "boost"], default="slowmo")
+        parser.add_argument("--factor", type=float, default=2.0)
+        parser.add_argument("--scene_threshold", type=float, default=0.05)
+        parser.add_argument("--blend-cuts", type=int, default=0)
+        parser.add_argument("--crf", type=int, default=18)
+        parser.add_argument("--preset", default="fast")
+        parser.add_argument("--output", required=True)
+        parser.add_argument("--ffmpeg", required=True)
+        parser.add_argument("--ffprobe", required=True)
+        parser.add_argument("--rife-dir", required=True)
+        args = parser.parse_args()
+        ensure_tools_in_path(args.ffmpeg, args.ffprobe)
+        process_time_remap(
+            video_path=args.video,
+            mode=args.mode,
+            factor=args.factor,
+            scene_threshold=args.scene_threshold,
+            blend_cuts=args.blend_cuts,
+            crf=args.crf,
+            preset=args.preset,
+            output_path=args.output,
+            ffmpeg_exe=args.ffmpeg,
+            ffprobe_exe=args.ffprobe,
+            rife_dir=args.rife_dir,
+        )
+    except Exception as e:
+        sys.stderr.write(f"\n[time_remap fatal error] {e}\n{traceback.format_exc()}\n")
+        sys.stderr.flush()
+        sys.exit(1)

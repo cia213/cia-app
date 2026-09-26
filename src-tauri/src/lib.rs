@@ -481,8 +481,19 @@ fn path_text(path: Option<PathBuf>) -> Option<String> {
     path.map(|value| value.to_string_lossy().to_string())
 }
 
+fn strip_unc_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let text = path.as_ref().to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{stripped}"))
+    } else if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.as_ref().to_path_buf()
+    }
+}
+
 fn bundled_resource(app: &tauri::AppHandle, relative: &str) -> Option<PathBuf> {
-    let resource_dir = app.path().resource_dir().ok()?;
+    let resource_dir = strip_unc_path(app.path().resource_dir().ok()?);
     [
         resource_dir.join("resources").join(relative),
         resource_dir.join(relative),
@@ -1544,18 +1555,23 @@ async fn run_time_remap(
     let out_path = reservation.output.clone();
 
     let mut command = Command::new(&runtime.python);
+    command.current_dir(strip_unc_path(&runtime.directory));
+    command.env("PYTHONUNBUFFERED", "1");
+
     if let Some(ffmpeg_dir) = runtime.media.ffmpeg.parent() {
+        let clean_ffmpeg_dir = strip_unc_path(ffmpeg_dir);
         let current_path = env::var_os("PATH").unwrap_or_default();
-        let mut paths = vec![ffmpeg_dir.to_path_buf()];
-        paths.extend(env::split_paths(&current_path));
+        let mut paths = vec![clean_ffmpeg_dir];
+        paths.extend(env::split_paths(&current_path).map(|p| strip_unc_path(&p)));
         if let Ok(new_path) = env::join_paths(paths) {
-            command.env("PATH", new_path);
+            command.env("PATH", &new_path);
+            command.env("Path", &new_path);
         }
     }
     command
-        .arg(&runtime.script)
+        .arg(strip_unc_path(&runtime.script))
         .arg("--video")
-        .arg(&video_path)
+        .arg(strip_unc_path(Path::new(&video_path)))
         .arg("--mode")
         .arg(&mode)
         .arg("--factor")
@@ -1569,13 +1585,13 @@ async fn run_time_remap(
         .arg("--blend-cuts")
         .arg(blend_cuts.to_string())
         .arg("--output")
-        .arg(&out_path)
+        .arg(strip_unc_path(&out_path))
         .arg("--ffmpeg")
-        .arg(&runtime.media.ffmpeg)
+        .arg(strip_unc_path(&runtime.media.ffmpeg))
         .arg("--ffprobe")
-        .arg(&runtime.media.ffprobe)
+        .arg(strip_unc_path(&runtime.media.ffprobe))
         .arg("--rife-dir")
-        .arg(&runtime.directory)
+        .arg(strip_unc_path(&runtime.directory))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
@@ -1593,10 +1609,10 @@ async fn run_time_remap(
     let output_app = app.clone();
     let error_app = app.clone();
     let output_task = tokio::spawn(async move { pump(stdout, output_app).await });
-    let error_task = tokio::spawn(async move { pump(stderr, error_app).await });
+    let error_task = tokio::spawn(async move { pump_and_collect(stderr, error_app).await });
     let status = child.wait().await.map_err(|error| error.to_string())?;
     let _ = output_task.await;
-    let _ = error_task.await;
+    let stderr_lines = error_task.await.unwrap_or_default();
     let cancelled = finish_job(&registry, &job_id)?
         .map(|job| job.cancel_requested)
         .unwrap_or(false);
@@ -1612,7 +1628,21 @@ async fn run_time_remap(
         ensure_nonempty_file(&out_path, "RIFE")?;
         Ok(out_path.to_string_lossy().to_string())
     } else {
-        Err(format!("RIFE process failed ({status})"))
+        let detail = stderr_lines
+            .iter()
+            .rev()
+            .find(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("error")
+                    || lower.contains("exception")
+                    || lower.contains("assert")
+                    || lower.contains("failed")
+            })
+            .or_else(|| stderr_lines.last())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Unknown failure");
+        Err(format!("RIFE process failed ({status}): {detail}"))
     }
 }
 
