@@ -13,9 +13,9 @@ def strip_unc(path_str):
     if not path_str:
         return ""
     s = str(path_str)
-    if s.startswith(r"\\?\UNC\\") or s.startswith(r"\\?\UNC/"):
-        return r"\\" + s[8:]
-    if s.startswith(r"\\?\"):
+    if s.startswith("\\\\?\\UNC\\") or s.startswith("\\\\?\\UNC/"):
+        return "\\\\" + s[8:]
+    if s.startswith("\\\\?\\"):
         return s[4:]
     return s
 

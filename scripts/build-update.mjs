@@ -34,7 +34,7 @@ const signature = fs.readFileSync(sigPath, 'utf8').trim();
 
 const manifest = {
   version: version,
-  notes: `cia render v${version}\n- Fix RIFE orchestration with live pipe streaming and transparent exception reporting\n- Strip extended UNC prefixes (\\\\?\\) from PATH to prevent Win32 loader and skvideo failures\n- Set explicit child process working directory and unbuffered Python output`,
+  notes: `cia render v${version}\n- Fix Python raw string syntax error in strip_unc path normalization\n- Solidify RIFE execution environment with clean non-UNC PATH injection and pipe streaming`,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
