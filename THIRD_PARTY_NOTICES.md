@@ -8,7 +8,7 @@ runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
 | Component | Role | Licence / notice status in V1 |
 | --- | --- | --- |
 | Practical-RIFE | Optional local frame interpolation runtime | MIT licence in the upstream source (hzwer, 2021). Source and RIFE 4.26 weights are fetched after explicit user action; model-weight distribution is not implied by the installer. |
-| smoothie-rs | Bundled local render runtime | Bundled from a staged upstream portable runtime. Preserve its included `LICENSE.txt` and all plugin notices; record exact provenance for each release. |
+| smoothie-rs | Bundled local render runtime | GPL-3.0, portable release `Nightly_2025.11.30_14-36`, commit `3da73de9df0c991801c4f8474b320445fb25a208`. Its GPL text, embedded Python licence and all archive notices are retained; provenance and file hashes are in `resources/RELEASE-PAYLOAD.json`. |
 | VapourSynth | Supplied within the bundled Smoothie runtime | Its own LGPL terms and notices are preserved in the staged runtime payload. |
 | FFmpeg | Bundled media probing and encoding tools | Current staged build identifies itself as GPLv3. Public distribution requires the corresponding GPL notice and source-availability obligations for that exact build. |
 | Python 3.11.9 | Optional RIFE bootstrap | Official Windows installer bundled under the Python Software Foundation License; SHA-256 recorded in runtime release notes. |

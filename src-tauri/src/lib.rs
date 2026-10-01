@@ -3307,8 +3307,11 @@ mod tests {
     #[test]
     #[ignore = "requires the local bundled FFmpeg and Smoothie runtime"]
     fn bundled_smoothie_pipeline_preserves_geometry_audio_and_publishes_safely() {
-        let resource_root =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime");
+        let resource_root = std::env::var_os("CIA_TEST_RUNTIME_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime")
+            });
         let ffmpeg = resource_root.join("ffmpeg/ffmpeg.exe");
         let ffprobe = resource_root.join("ffmpeg/ffprobe.exe");
         let smoothie_root = resource_root.join("smoothie");
