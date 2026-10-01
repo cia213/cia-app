@@ -1,329 +1,300 @@
+"""RIFE -> bounded RGB pipe -> final encode; no lossy intermediate or scene scan."""
 import argparse
-import glob
+from collections import deque
+from contextlib import nullcontext
+from fractions import Fraction
 import json
+import math
 import os
+from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-import traceback
 
 
-def strip_unc(path_str):
-    if not path_str:
-        return ""
-    s = str(path_str)
-    if s.startswith("\\\\?\\UNC\\") or s.startswith("\\\\?\\UNC/"):
-        return "\\\\" + s[8:]
-    if s.startswith("\\\\?\\"):
-        return s[4:]
-    return s
+def strip_unc(value):
+    value = str(value or "")
+    if value.startswith("\\\\?\\UNC\\") or value.startswith("\\\\?\\UNC/"):
+        return "\\\\" + value[8:]
+    return value[4:] if value.startswith("\\\\?\\") else value
 
 
 def run_command(args, cwd=None):
-    result = subprocess.run(args, capture_output=True, text=True, shell=False, cwd=cwd)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed: {args}\nError: {result.stderr}")
+    result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", shell=False, cwd=cwd)
+    if result.returncode:
+        raise RuntimeError(f"Media command failed: {result.stderr[-4000:]}")
     return result.stdout
 
 
 def get_video_info(video_path, ffprobe_exe):
-    command = [
-        ffprobe_exe, "-v", "quiet", "-print_format", "json",
-        "-show_streams", "-show_format", video_path,
-    ]
-    data = json.loads(run_command(command))
-    video = next(stream for stream in data["streams"] if stream["codec_type"] == "video")
-    audio = next((stream for stream in data["streams"] if stream["codec_type"] == "audio"), None)
-    subtitles = next((stream for stream in data["streams"] if stream["codec_type"] == "subtitle"), None)
-    numerator, denominator = map(float, video["r_frame_rate"].split("/"))
-    fps = numerator / denominator if denominator else 30.0
-    return {
-        "fps": fps,
-        "width": int(video["width"]),
-        "height": int(video["height"]),
-        "duration": float(data["format"]["duration"]),
-        "has_audio": audio is not None,
-        "has_subtitles": subtitles is not None,
-    }
-
-
-def detect_scene_changes(video_path, threshold, ffmpeg_exe):
-    command = [
-        ffmpeg_exe, "-hide_banner", "-i", video_path,
-        "-filter_complex", f"select='gt(scene,{threshold})',showinfo",
-        "-f", "null", "-",
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, shell=False)
-    timestamps = []
-    for line in result.stderr.splitlines():
-        if "showinfo" in line and "pts_time:" in line:
-            for part in line.split():
-                if part.startswith("pts_time:"):
-                    timestamps.append(float(part.split(":")[1]))
-    return sorted(set(timestamps))
+    data = json.loads(run_command([ffprobe_exe, "-v", "error", "-show_streams", "-show_format", "-of", "json", video_path]))
+    video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic")), None)
+    if video is None:
+        raise ValueError("The selected file has no video stream")
+    def rational(value, default=Fraction(0)):
+        try:
+            return Fraction(str(value).replace(":", "/"))
+        except (ValueError, ZeroDivisionError):
+            return default
+    rate = rational(video.get("avg_frame_rate", "0/1"))
+    if rate <= 0:
+        rate = rational(video.get("r_frame_rate", "0/1"))
+    duration = float(video.get("duration") or data.get("format", {}).get("duration") or 0)
+    width, height = int(video.get("width", 0)), int(video.get("height", 0))
+    sar = rational(video.get("sample_aspect_ratio", "1:1"), Fraction(1))
+    if sar <= 0:
+        sar = Fraction(1)
+    rotation = next((float(s.get("rotation", 0)) for s in video.get("side_data_list", []) if "rotation" in s), 0)
+    if abs(rotation) % 180 == 90:
+        width, height = height, width
+        sar = 1 / sar
+    if rate <= 0 or width <= 0 or height <= 0 or not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Video dimensions, cadence and duration must be valid")
+    return {"fps": float(rate), "rate": str(rate), "width": width, "height": height,
+            "video_index": int(video.get("index", data["streams"].index(video))),
+            "duration": duration, "has_audio": any(s.get("codec_type") == "audio" for s in data["streams"]),
+            "audio_codec": next((s.get("codec_name") for s in data["streams"] if s.get("codec_type") == "audio"), None),
+            "subtitles": [s for s in data["streams"] if s.get("codec_type") == "subtitle"],
+            "transfer": video.get("color_transfer", "unknown"),
+            "sar": str(sar), "nominal_rate": str(rational(video.get("r_frame_rate", "0/1"))),
+            "nb_frames": int(video["nb_frames"]) if str(video.get("nb_frames", "")).isdigit() else None}
 
 
 def build_atempo_filter(speed):
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError("Audio tempo must be finite and positive")
     filters = []
-    current = speed
-    while current < 0.5:
+    while speed < 0.5:
         filters.append("atempo=0.5")
-        current /= 0.5
-    while current > 2.0:
-        filters.append("atempo=2.0")
-        current /= 2.0
-    filters.append(f"atempo={current:.6f}")
-    return ",".join(filters)
+        speed /= 0.5
+    while speed > 2:
+        filters.append("atempo=2")
+        speed /= 2
+    return ",".join([*filters, f"atempo={speed:.9f}"])
 
 
 def ensure_tools_in_path(*tools):
-    current_path = os.environ.get("PATH", "") or os.environ.get("Path", "")
-    parts = [strip_unc(p) for p in current_path.split(os.pathsep) if p]
+    parts = [strip_unc(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p]
     for tool in tools:
-        if not tool:
-            continue
-        cleaned = strip_unc(str(tool))
-        tool_dir = os.path.dirname(os.path.abspath(cleaned)) if os.path.isfile(cleaned) else os.path.abspath(cleaned)
-        tool_dir = strip_unc(tool_dir)
-        if tool_dir and os.path.isdir(tool_dir) and tool_dir not in parts:
-            parts.insert(0, tool_dir)
-    joined = os.pathsep.join(parts)
-    os.environ["PATH"] = joined
-    os.environ["Path"] = joined
+        directory = str(Path(strip_unc(tool)).resolve().parent)
+        if directory not in parts:
+            parts.insert(0, directory)
+    os.environ["PATH"] = os.pathsep.join(parts)
+    os.environ["Path"] = os.environ["PATH"]
 
 
-def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=0.05,
-                       blend_cuts=0, crf=18, preset="fast", output_path=None,
-                       ffmpeg_exe="ffmpeg", ffprobe_exe="ffprobe", rife_dir=None):
+def retime_srt(text, factor):
+    def scale(match):
+        h, m, s, ms = map(int, match.groups())
+        total = round(((h * 3600 + m * 60 + s) * 1000 + ms) * factor)
+        hours, rem = divmod(total, 3600000)
+        minutes, rem = divmod(rem, 60000)
+        seconds, millis = divmod(rem, 1000)
+        return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
+    return re.sub(r"(?m)^\d{2,}:\d{2}:\d{2},\d{3} --> \d{2,}:\d{2}:\d{2},\d{3}.*$",
+                  lambda line: re.sub(r"(\d{2,}):(\d{2}):(\d{2}),(\d{3})", scale, line[0]), text)
+
+
+def encoder_arguments(encoder, crf, preset):
+    if encoder == "h264_nvenc":
+        return ["-c:v", encoder, "-preset", "p5", "-rc", "vbr", "-cq", str(crf), "-b:v", "0"]
+    if encoder != "libx264":
+        raise ValueError("Unsupported encoder")
+    return ["-c:v", "libx264", "-crf", str(crf), "-preset", preset]
+
+
+def validate_options(mode, factor, crf, preset, precision, encoder):
+    if mode not in ("boost", "slowmo"):
+        raise ValueError("Unsupported interpolation mode")
+    if not math.isfinite(float(factor)) or int(factor) != factor or not 2 <= factor <= 10:
+        raise ValueError("Interpolation factor must be an integer from 2 to 10")
+    if not 0 <= crf <= 51:
+        raise ValueError("Quality must be from 0 to 51")
+    if preset not in ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"):
+        raise ValueError("Unsupported x264 preset")
+    if precision not in ("fp32", "fp16") or encoder not in ("libx264", "h264_nvenc"):
+        raise ValueError("Unsupported precision or encoder")
+
+
+def process_time_remap(video_path, mode="slowmo", factor=2.0, scene_threshold=None,
+                       blend_cuts=None, crf=18, preset="medium", output_path=None,
+                       ffmpeg_exe="ffmpeg", ffprobe_exe="ffprobe", rife_dir=None,
+                       model_dir=None, precision="fp32", encoder="libx264", work_dir=None):
+    validate_options(mode, factor, crf, preset, precision, encoder)
+    factor = int(factor)
+    if blend_cuts not in (None, 0):
+        raise ValueError("Custom cut blending is unsupported; RIFE uses built-in cut handling")
     ensure_tools_in_path(ffmpeg_exe, ffprobe_exe)
-    source = os.path.abspath(strip_unc(video_path))
-    if not os.path.isfile(source):
+    source = Path(strip_unc(video_path)).resolve()
+    if not source.is_file():
         raise FileNotFoundError(f"Video not found: {source}")
     if output_path is None:
-        raise ValueError("--output is required; the caller owns output naming")
+        raise ValueError("--output is required")
+    destination = Path(strip_unc(output_path)).resolve()
+    if destination.exists():
+        raise FileExistsError("The output already exists; select a new destination")
+    rife = Path(strip_unc(rife_dir) if rife_dir else Path(__file__).parent / "Practical-RIFE").resolve()
+    model = Path(strip_unc(model_dir) if model_dir else rife / "train_log").resolve()
+    for filename in ("flownet.pkl", "RIFE_HDv3.py", "IFNet_HDv3.py"):
+        if not (model / filename).is_file():
+            raise ValueError(f"Model code and weights are required: missing {filename}")
+    worker_path = Path(__file__).with_name("rife_worker.py")
+    if not worker_path.is_file():
+        raise FileNotFoundError("The bundled RIFE worker is missing")
+    info = get_video_info(str(source), ffprobe_exe)
+    if info["transfer"] in ("smpte2084", "arib-std-b67"):
+        raise ValueError("HDR interpolation requires tone mapping; convert to SDR first")
+    if any(s.get("codec_name") not in {"subrip", "ass", "ssa", "mov_text", "text", "webvtt"} for s in info["subtitles"]):
+        raise ValueError("Bitmap subtitles cannot be preserved in MP4; use text subtitles")
+    fps = Fraction(info["rate"]) * (factor if mode == "boost" else 1)
+    duration = info["duration"] * (factor if mode == "slowmo" else 1)
+    expected_frames = max(1, round(duration * float(fps)))
+    print(f"[cia render] RIFE {precision}, encoder={encoder}, FPS={fps}, duration={duration:.3f}s", flush=True)
+    print("[cia render] Built-in scene handling; no additional scene scan", flush=True)
+    started = time.monotonic()
+    context = nullcontext(str(work_dir)) if work_dir else tempfile.TemporaryDirectory(prefix=".cia-render-", dir=destination.parent)
+    with context as directory:
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        partial = directory / "encoded.mp4"
+        if partial.exists():
+            raise FileExistsError("The job work directory already contains an encoded output")
+        command = [ffmpeg_exe, "-v", "warning", "-n", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                   "-s:v", f"{info['width']}x{info['height']}", "-r", str(fps), "-i", "pipe:0"]
+        next_input = 1
+        if info["has_audio"]:
+            command.extend(["-i", str(source)])
+            next_input += 1
+        subtitles = []
+        for index, stream in enumerate(info["subtitles"]):
+            text = run_command([ffmpeg_exe, "-v", "error", "-i", str(source), "-map", f"0:{stream['index']}", "-f", "srt", "pipe:1"])
+            subtitle = directory / f"subtitle-{index}.srt"
+            subtitle.write_text(retime_srt(text, factor if mode == "slowmo" else 1), encoding="utf-8")
+            command.extend(["-i", str(subtitle)])
+            subtitles.append(next_input)
+            next_input += 1
+        command.extend(["-map", "0:v:0", *encoder_arguments(encoder, crf, preset),
+                        "-vf", f"pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=in_range=full:out_range=tv:out_color_matrix=bt709,format=yuv420p,setsar={info['sar']},setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+                        "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"])
+        if info["has_audio"]:
+            command.extend(["-map", "1:a:0"])
+            if mode == "boost" and info["audio_codec"] in {"aac", "mp3", "ac3", "eac3", "alac"}:
+                command.extend(["-c:a", "copy"])
+            else:
+                command.extend(["-c:a", "aac", "-b:a", "192k"])
+            if mode == "slowmo":
+                command.extend(["-filter:a", build_atempo_filter(1 / factor)])
+        for index, input_index in enumerate(subtitles):
+            command.extend(["-map", f"{input_index}:s:0", f"-metadata:s:s:{index}",
+                            f"language={info['subtitles'][index].get('tags', {}).get('language', 'und')}"])
+        if subtitles:
+            command.extend(["-c:s", "mov_text"])
+        command.extend(["-map_metadata", "-1", "-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", str(partial)])
+        worker_command = [sys.executable, "-u", str(worker_path), "--video", str(source), "--ffmpeg", ffmpeg_exe,
+                          "--rife-dir", str(rife), "--model-dir", str(model), "--width", str(info["width"]),
+                          "--height", str(info["height"]), "--fps", info["rate"], "--factor", str(factor), "--precision", precision,
+                          "--expected-frames", str(expected_frames), "--video-index", str(info["video_index"])]
+        worker = encoding = None
+        threads = []
+        worker_errors, encoder_errors = deque(maxlen=80), deque(maxlen=80)
+        counts = {}
 
-    info = get_video_info(source, ffprobe_exe)
-    input_fps = info["fps"]
-    interpolation_factor = int(factor) if factor.is_integer() else factor
-    if mode == "boost":
-        output_fps = round(input_fps * factor)
-        target_duration = info["duration"]
-    else:
-        output_fps = round(input_fps)
-        target_duration = info["duration"] * factor
+        def drain(pipe, buffer, is_worker=False):
+            for line in iter(pipe.readline, b""):
+                line = line.decode("utf-8", "replace").strip()
+                if line:
+                    buffer.append(line)
+                    print(line, file=sys.stderr, flush=True)
+                    if is_worker and line.startswith("CIA_WORKER_DONE"):
+                        counts.update({key: int(value) for key, value in re.findall(r"(input_frames|output_frames)=(\d+)", line)})
 
-    final_output = os.path.abspath(strip_unc(output_path))
-    output_directory = os.path.dirname(final_output)
-    base_name = os.path.splitext(os.path.basename(source))[0]
-    rife_directory = os.path.abspath(
-        strip_unc(rife_dir) if rife_dir else os.path.join(os.path.dirname(__file__), "Practical-RIFE")
-    )
-    python = sys.executable
-
-    print("=== TIME-REMAP PIPELINE (RIFE 4.26) ===", flush=True)
-    print(f"Input Video     : {source}", flush=True)
-    print(f"Input Specs     : {info['width']}x{info['height']} @ {input_fps:.2f} FPS ({info['duration']:.2f}s)", flush=True)
-    print(f"Pipeline Mode   : {mode.upper()} ({interpolation_factor}x)", flush=True)
-    print(f"Output Specs    : {output_fps} FPS (Target duration: {target_duration:.2f}s)", flush=True)
-    cuts = detect_scene_changes(source, scene_threshold, ffmpeg_exe)
-    print(f"Scene Detection : {len(cuts)} scene cuts detected (Threshold: {scene_threshold}, Blend cuts: {blend_cuts})", flush=True)
-
-    started = time.time()
-    print("\n[*] Running RIFE 4.26 Frame Interpolation...", flush=True)
-    rife_command = [
-        python, os.path.join(rife_directory, "inference_video.py"),
-        "--video", source, "--multi", str(interpolation_factor),
-    ]
-    rife_started = time.time()
-
-    all_stderr = []
-    proc = subprocess.Popen(
-        rife_command,
-        cwd=rife_directory,
-        env=os.environ.copy(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-
-    def stream_stderr():
-        for line in proc.stderr:
-            all_stderr.append(line)
-            sys.stderr.write(line)
-            sys.stderr.flush()
-
-    def stream_stdout():
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-
-    t_err = threading.Thread(target=stream_stderr, daemon=True)
-    t_out = threading.Thread(target=stream_stdout, daemon=True)
-    t_err.start()
-    t_out.start()
-    proc.wait()
-    t_err.join(timeout=5)
-    t_out.join(timeout=5)
-
-    if proc.returncode != 0:
-        err_dump = "".join(all_stderr).strip()
-        sys.stderr.write(f"\n[RIFE ERROR] inference_video.py failed with code {proc.returncode}:\n{err_dump}\n")
-        sys.stderr.flush()
-        raise RuntimeError(f"RIFE inference failed (code {proc.returncode}): {err_dump or 'Abnormal child termination'}")
-
-    # RIFE determines FPS from the decoded stream. For variable-frame-rate input,
-    # that can differ from ffprobe's nominal r_frame_rate used by this script.
-    # Find the fresh output RIFE actually created instead of reconstructing its FPS.
-    raw_candidates = []
-    output_name_pattern = f"{base_name}_{interpolation_factor}X_*fps.mp4"
-    for directory in dict.fromkeys([output_directory, rife_directory]):
-        for candidate in glob.glob(os.path.join(directory, output_name_pattern)):
-            if os.path.isfile(candidate) and os.path.getmtime(candidate) >= rife_started - 1:
-                raw_candidates.append(candidate)
-    if not raw_candidates:
-        raise FileNotFoundError(
-            f"Raw RIFE output missing after interpolation: {output_name_pattern}"
-        )
-    raw_interpolation = max(raw_candidates, key=os.path.getmtime)
-    print(f"[cia render] RIFE output detected: {raw_interpolation}", flush=True)
-
-    total_frames = max(1, int(round(target_duration * output_fps)))
-    print(f"\n[cia render] Finalizing output with FFmpeg (CRF {crf}, Preset {preset})...", flush=True)
-    command = [ffmpeg_exe, "-y", "-i", raw_interpolation]
-    video_filter = []
-    audio_flags = []
-    subtitle_flags = []
-    if info["has_audio"] or info["has_subtitles"]:
-        command.extend(["-i", source])
-
-    command.extend(["-map", "0:v:0"])
-    if info["has_audio"]:
-        command.extend(["-map", "1:a:0?"])
-        if mode == "slowmo":
-            audio_flags = ["-c:a", "aac", "-b:a", "192k", "-filter:a", build_atempo_filter(1.0 / factor)]
-            video_filter = ["-vf", f"setpts={factor}*PTS"]
-        else:
-            audio_flags = ["-c:a", "copy"]
-    elif mode == "slowmo":
-        video_filter = ["-vf", f"setpts={factor}*PTS"]
-
-    if info["has_subtitles"]:
-        command.extend(["-map", "1:s?"])
-        subtitle_flags = ["-c:s", "copy"]
-
-    command.extend([
-        "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
-        "-pix_fmt", "yuv420p", "-color_primaries", "bt709",
-        "-color_trc", "bt709", "-colorspace", "bt709",
-        "-x264opts", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-    ])
-    command.extend(video_filter)
-    command.extend(["-r", str(output_fps)])
-    command.extend(audio_flags)
-    command.extend(subtitle_flags)
-    command.extend([
-        "-map_metadata", "-1",
-        "-progress", "pipe:1",
-        "-stats_period", "0.2",
-        final_output,
-    ])
-
-    proc = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-    )
-    cur_frame = 0
-    cur_fps = 0.0
-    cur_speed = "1x"
-    cur_time = "00:00:00"
-    log_buffer = []
-
-    for raw_line in proc.stdout:
-        line = raw_line.strip()
-        if not line:
-            continue
-        if "=" in line:
-            key, val = line.split("=", 1)
-            key = key.strip()
-            val = val.strip()
-            if key == "frame":
-                try:
-                    cur_frame = int(val)
-                except ValueError:
-                    pass
-            elif key == "fps":
-                try:
-                    cur_fps = float(val)
-                except ValueError:
-                    pass
-            elif key == "speed":
-                cur_speed = val.replace(" ", "")
-            elif key == "out_time":
-                cur_time = val.split(".")[0]
-            elif key == "progress":
-                pct = min(100, max(0, int(round((cur_frame / total_frames) * 100)))) if total_frames > 0 else 0
-                if val == "end":
-                    pct = 100
-                    cur_frame = total_frames
-                print(
-                    f"[cia render] ENCODING frame={cur_frame} total_frames={total_frames} fps={cur_fps:.1f} time={cur_time} speed={cur_speed} pct={pct}%",
-                    flush=True,
-                )
-        else:
-            log_buffer.append(line)
-            if len(log_buffer) > 50:
-                log_buffer.pop(0)
-
-    proc.wait()
-    if proc.returncode != 0:
-        err_msg = "\n".join(log_buffer)
-        raise RuntimeError(f"FFmpeg encoding failed with code {proc.returncode}:\n{err_msg}")
-    if os.path.exists(raw_interpolation):
-        os.remove(raw_interpolation)
-
-    elapsed = time.time() - started
-    print(f"\n[OK] COMPLETE: Output saved to {final_output} (Processing time: {elapsed:.1f}s)", flush=True)
-    return final_output
+        try:
+            worker = subprocess.Popen(worker_command, cwd=rife, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            threads.append(threading.Thread(target=drain, args=(worker.stderr, worker_errors, True), daemon=True))
+            threads[-1].start()
+            encoding = subprocess.Popen(command, stdin=worker.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            worker.stdout.close()
+            threads.append(threading.Thread(target=drain, args=(encoding.stderr, encoder_errors), daemon=True))
+            threads[-1].start()
+            values = {"frame": "0", "fps": "0", "out_time": "00:00:00", "speed": "0x"}
+            for line in iter(encoding.stdout.readline, b""):
+                key, _, value = line.decode("utf-8", "replace").strip().partition("=")
+                values[key] = value
+                if key == "progress":
+                    frame = int(values["frame"])
+                    percent = min(99, round(frame / expected_frames * 100))
+                    print(f"[cia render] ENCODING frame={frame} total_frames={expected_frames} fps={values['fps']} time={values['out_time'].split('.')[0]} speed={values['speed']} pct={percent}%", flush=True)
+            encoder_code = encoding.wait()
+            worker_code = worker.wait()
+            for thread in threads:
+                thread.join()
+            if worker_code or encoder_code:
+                raise RuntimeError(f"RIFE/encoding failed ({worker_code}/{encoder_code}): " + "\n".join([*worker_errors, *encoder_errors])[-6000:])
+            if counts.get("output_frames", 0) <= 0:
+                raise RuntimeError("RIFE worker did not confirm completion")
+            if info["nb_frames"] is not None and Fraction(info["nominal_rate"]) == Fraction(info["rate"]) and counts["input_frames"] != info["nb_frames"]:
+                raise RuntimeError("Decoded frame count differs from the complete CFR source")
+            if abs(counts["input_frames"] / info["fps"] - info["duration"]) > max(0.08, 2 / info["fps"]):
+                raise RuntimeError("Decoded video duration differs from the source")
+            result = get_video_info(str(partial), ffprobe_exe)
+            expected_duration = counts["output_frames"] / float(fps)
+            if abs(result["duration"] - expected_duration) > max(0.08, 2 / float(fps)):
+                raise RuntimeError("Encoded video duration differs from generated frames")
+            if result["nb_frames"] != counts["output_frames"] or Fraction(result["rate"]) != fps:
+                raise RuntimeError("Encoded frame count or cadence differs from RIFE output")
+            if info["has_audio"] and not result["has_audio"]:
+                raise RuntimeError("Output audio is missing")
+            # No-clobber publication, even if another program races our reservation.
+            if os.name == "nt":
+                os.rename(partial, destination)
+            else:
+                os.link(partial, destination)
+                partial.unlink()
+            print(f"[OK] COMPLETE: Output saved to {destination} (Processing time: {time.monotonic()-started:.3f}s)", flush=True)
+            return str(destination)
+        finally:
+            for process in (encoding, worker):
+                if process is not None:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait()
+            for thread in threads:
+                thread.join(timeout=5)
+            for process in (encoding, worker):
+                if process is not None:
+                    for pipe in (process.stdout, process.stderr):
+                        if pipe is not None and not pipe.closed:
+                            pipe.close()
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="cia render streaming RIFE orchestration")
+    parser.add_argument("--video", required=True)
+    parser.add_argument("--mode", choices=("slowmo", "boost"), default="slowmo")
+    parser.add_argument("--factor", type=float, default=2)
+    parser.add_argument("--scene_threshold", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--blend-cuts", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--crf", type=int, default=18)
+    parser.add_argument("--preset", default="medium")
+    parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
+    parser.add_argument("--encoder", choices=("libx264", "h264_nvenc"), default="libx264")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--ffmpeg", required=True)
+    parser.add_argument("--ffprobe", required=True)
+    parser.add_argument("--rife-dir", required=True)
+    parser.add_argument("--model-dir", default=None)
+    parser.add_argument("--work-dir", default=None)
     try:
-        parser = argparse.ArgumentParser(description="cia render RIFE orchestration")
-        parser.add_argument("--video", required=True)
-        parser.add_argument("--mode", choices=["slowmo", "boost"], default="slowmo")
-        parser.add_argument("--factor", type=float, default=2.0)
-        parser.add_argument("--scene_threshold", type=float, default=0.05)
-        parser.add_argument("--blend-cuts", type=int, default=0)
-        parser.add_argument("--crf", type=int, default=18)
-        parser.add_argument("--preset", default="fast")
-        parser.add_argument("--output", required=True)
-        parser.add_argument("--ffmpeg", required=True)
-        parser.add_argument("--ffprobe", required=True)
-        parser.add_argument("--rife-dir", required=True)
-        args = parser.parse_args()
-        ensure_tools_in_path(args.ffmpeg, args.ffprobe)
-        process_time_remap(
-            video_path=args.video,
-            mode=args.mode,
-            factor=args.factor,
-            scene_threshold=args.scene_threshold,
-            blend_cuts=args.blend_cuts,
-            crf=args.crf,
-            preset=args.preset,
-            output_path=args.output,
-            ffmpeg_exe=args.ffmpeg,
-            ffprobe_exe=args.ffprobe,
-            rife_dir=args.rife_dir,
-        )
-    except Exception as e:
-        sys.stderr.write(f"\n[time_remap fatal error] {e}\n{traceback.format_exc()}\n")
-        sys.stderr.flush()
+        options = vars(parser.parse_args())
+        options["video_path"] = options.pop("video")
+        options["output_path"] = options.pop("output")
+        options["ffmpeg_exe"] = options.pop("ffmpeg")
+        options["ffprobe_exe"] = options.pop("ffprobe")
+        process_time_remap(**options)
+    except Exception as error:
+        print(f"[time_remap fatal error] {error}", file=sys.stderr, flush=True)
         sys.exit(1)

@@ -1,0 +1,33 @@
+{
+  "baseline_revision": "241f350025e7e8504d0f5eae1f3c46ea283778cd",
+  "observed_worktree_revision": "241f350025e7e8504d0f5eae1f3c46ea283778cd",
+  "baseline_script": "C:\\Users\\cia\\time-remap-app\\audit-baseline\\time_remap.py",
+  "baseline_script_sha256": "3fb9cc2b5c2b21f131a79ea2c581d71418e3fdcfc09d6ec5c5e2c830c417e2ce",
+  "legacy_inference_sha256": "c41d8e52b1fceda4ef2184c026544c41a7b2c8e1ecc2881539e0ff90525c7ff0",
+  "model_weights": {
+    "flownet.pkl": "45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f"
+  },
+  "benchmark_contract": {
+    "matched": "Legacy FP32/libx264 vs patch FP32/libx264, same factor, source, CRF and preset",
+    "paired_order": "Alternate AB then BA across repetitions",
+    "timing": "Whole process wall time including Python startup/model loading, audio and encoding",
+    "endpoint_policy": "Legacy usually (N-1)*factor+1; patch N*factor with final-frame hold",
+    "quality": "Decoded full-resolution SSIM/PSNR on common frame indices; differences expected from removing legacy lossy MPEG-4 intermediate",
+    "optional_profiles": "Patch FP16/x264 and FP16/NVENC, compared against patch FP32/x264; CQ 18 does not equal CRF 18",
+    "gpu_guard": "GPU execution occurs only with explicit --run"
+  },
+  "prior_audit_review": [
+    "Prior numbers measured separate components, not application end-to-end gain; do not sum them.",
+    "Eight-preview-process estimate omitted local luminance scoring; measure the complete replacement before claiming 51%.",
+    "FP16 and NVENC speed figures lacked quality comparisons. FP16 needs an independent same-pipeline FP32 reference.",
+    "Original Smoothie unmatched filter measurements are unsuitable for speed comparisons; only *_matched values are usable.",
+    "Two RIFE runs and short clips include warm-up/model load and do not prove sustained long-video throughput.",
+    "Legacy sample had no audio; end-to-end application comparisons must include audio and verify stream duration.",
+    "Legacy mp4v intermediate changes visual fidelity. A faster raw-frame patch is a pipeline improvement, not quality-equivalent byte output."
+  ],
+  "source": "C:\\Users\\cia\\time-remap-app\\test_clip_topaz_source_2s.mp4",
+  "source_sha256": "2b906b65b63ace318029e7af95ab685b314b102030380c67c38ffbd29fb983fb",
+  "python": "C:\\Users\\cia\\time-remap-app\\venv\\Scripts\\python.exe",
+  "ffmpeg": "C:\\Users\\cia\\time-remap-ui\\src-tauri\\resources\\runtime\\ffmpeg\\ffmpeg.exe",
+  "ffmpeg_sha256": "228d7a8556258de907fdb55f36850078ebc7680b84ec30d84ea02e99bec1d1eb"
+}

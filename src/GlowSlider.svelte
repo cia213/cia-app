@@ -29,36 +29,46 @@
   let hoverAnim = $state(0);
 
   let lastTime = 0;
-  let animFrame;
+  let animFrame = null;
+  let targetRatio = 0;
+  let targetHover = 0;
 
   function updateAnim(now) {
-    if (!lastTime) lastTime = now;
+    if (!lastTime) lastTime = now - 16;
     const dt = Math.min((now - lastTime) / 1000, 0.05); // cap dt at 50ms
     lastTime = now;
 
     // 2. Exponential Decay Interpolation (speed = 20.0f)
-    const targetRatio = Math.max(0, Math.min(1, (tempValue - min) / (max - min)));
     vizRatio += (targetRatio - vizRatio) * Math.min(1.0, dt * 20.0);
 
     // 3. Smooth Alpha Hover Fade (speed = 10.0f)
-    const targetHover = (isHovered || isActive) ? 1.0 : 0.0;
     hoverAnim += (targetHover - hoverAnim) * Math.min(1.0, dt * 10.0);
 
+    if (Math.abs(targetRatio - vizRatio) < 0.0005 && Math.abs(targetHover - hoverAnim) < 0.001) {
+      vizRatio = targetRatio;
+      hoverAnim = targetHover;
+      animFrame = null;
+      lastTime = 0;
+      return;
+    }
     animFrame = requestAnimationFrame(updateAnim);
   }
 
   $effect(() => {
-    vizRatio = Math.max(0, Math.min(1, (value - min) / (max - min)));
-    lastTime = performance.now();
+    targetRatio = max === min ? 0 : Math.max(0, Math.min(1, (tempValue - min) / (max - min)));
+    targetHover = (isHovered || isActive) ? 1.0 : 0.0;
+    lastTime = 0;
     animFrame = requestAnimationFrame(updateAnim);
     return () => {
-      if (animFrame) cancelAnimationFrame(animFrame);
+      if (animFrame !== null) cancelAnimationFrame(animFrame);
+      animFrame = null;
     };
   });
 
   $effect(() => {
     if (!isValueEditing) return;
-    requestAnimationFrame(() => typedInput?.focus());
+    const frame = requestAnimationFrame(() => typedInput?.focus());
+    return () => cancelAnimationFrame(frame);
   });
 
   function handleInput(e) {
@@ -108,6 +118,8 @@
   }
 
 </script>
+
+<svelte:window onmouseup={() => isActive = false} onblur={() => { isActive = false; isHovered = false; }} />
 
 <div class="glow-slider-container">
   <div class="slider-header" class:slider-header--unlabeled={!label}>

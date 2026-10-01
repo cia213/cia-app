@@ -1,0 +1,177 @@
+{
+  "history_during_render": {
+    "isSmoothieProcessing": false,
+    "isProcessing": false,
+    "smoothiePath": ""
+  },
+  "effective_recipe_stdout": "recipe={ \"data\": {\"interpolation\": {\"enabled\": \"no\", \"masking\": \"no\", \"fps\": \"1920\", \"speed\": \"medium\", \"tuning\": \"weak\", \"algorithm\": \"23\", \"block size\": \"auto\", \"use gpu\": \"no\", \"area\": \"\"}, \"frame blending\": {\"enabled\": \"yes\", \"fps\": \"30\", \"intensity\": \"1.0\", \"weighting\": \"equal\", \"bright blend\": \"no\"}, \"flowblur\": {\"enabled\": \"no\", \"masking\": \"no\", \"amount\": \"125\", \"do blending\": \"after\"}, \"output\": {\"process\": \"ffmpeg\", \"enc args\": \"-vf scale=if(lte(iw\\\\,1280)\\\\,1280\\\\,if(lte(iw\\\\,1920)\\\\,1920\\\\,if(lte(iw\\\\,2560)\\\\,2560\\\\,3840))):if(lte(ih\\\\,720)\\\\,720\\\\,if(lte(ih\\\\,1080)\\\\,1080\\\\,if(lte(ih\\\\,1440)\\\\,1440\\\\,2160))),setsar=1/1 -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000\", \"file format\": \"%FILENAME% ~ %FRUIT%\", \"container\": \".MP4\"}, \"preview window\": {\"enabled\": \"no\", \"process\": \"ffplay\", \"output args\": \"-f yuv4mpegpipe -\"}, \"artifact masking\": {\"enabled\": \"no\", \"feathering\": \"yes\", \"folder path\": \"\", \"file name\": \"\"}, \"miscellaneous\": {\"source plugin\": \"bestsource\", \"play ding\": \"no\", \"always verbose\": \"no\", \"dedup threshold\": \"0.0\", \"global output folder\": \"\", \"source indexing\": \"no\", \"ffmpeg options\": \"-loglevel error -i - -hide_banner -stats -stats_period 0.15\", \"ffplay options\": \"-loglevel quiet -i - -autoexit -window_title smoothie.preview\"}, \"console\": {\"stay on top\": \"no\", \"borderless\": \"no\", \"position\": \"top left\", \"width\": \"900\", \"height\": \"350\"}, \"timescale\": {\"in\": \"1.0\", \"out\": \"1.0\"}, \"color grading\": {\"enabled\": \"no\", \"brightness\": \"1.5\", \"saturation\": \"1.5\", \"contrast\": \"1.5\", \"hue\": \"0\", \"coring\": \"no\"}, \"lut\": {\"enabled\": \"no\", \"path\": \"\", \"opacity\": \"1.0\"}, \"pre-interp\": {\"enabled\": \"no\", \"masking\": \"no\", \"factor\": \"3x\", \"model\": \"rife-v4.4\", \"gpu id\": \"0\", \"gpu thread\": \"1\", \"test-time augmentation\": \"no\", \"uhd\": \"no\", \"scene change\": \"no\"}} }\n",
+  "glob_bracket_filename": {
+    "exists": true,
+    "matches_unescaped": [],
+    "matches_escaped": [
+      "C:\\Users\\cia\\AppData\\Local\\Temp\\cia-audit-checks-b6558ytj\\clip [v1]_2X_240fps.mp4"
+    ]
+  },
+  "matched_smoothie_measurements": [
+    {
+      "name": "smoothie_x264_matched",
+      "seconds": [
+        2.9818586999972467,
+        2.9776877999975113,
+        2.9658935999977984
+      ],
+      "median_seconds": 2.9776877999975113,
+      "sizes_bytes": [
+        6912488,
+        6912488,
+        6912488
+      ],
+      "outputs": [
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_type": "video",
+              "width": 1920,
+              "height": 1080,
+              "r_frame_rate": "30/1",
+              "nb_read_frames": "60"
+            },
+            {
+              "codec_type": "audio",
+              "r_frame_rate": "0/0",
+              "nb_read_frames": "94"
+            }
+          ],
+          "format": {
+            "duration": "2.005000"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_type": "video",
+              "width": 1920,
+              "height": 1080,
+              "r_frame_rate": "30/1",
+              "nb_read_frames": "60"
+            },
+            {
+              "codec_type": "audio",
+              "r_frame_rate": "0/0",
+              "nb_read_frames": "94"
+            }
+          ],
+          "format": {
+            "duration": "2.005000"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_type": "video",
+              "width": 1920,
+              "height": 1080,
+              "r_frame_rate": "30/1",
+              "nb_read_frames": "60"
+            },
+            {
+              "codec_type": "audio",
+              "r_frame_rate": "0/0",
+              "nb_read_frames": "94"
+            }
+          ],
+          "format": {
+            "duration": "2.005000"
+          }
+        }
+      ],
+      "caveat": "Identical filters and audio; CRF and CQ are not quality equivalent."
+    },
+    {
+      "name": "smoothie_nvenc_matched",
+      "seconds": [
+        2.611006899998756,
+        1.976866600001813,
+        1.9780429000020376
+      ],
+      "median_seconds": 1.9780429000020376,
+      "sizes_bytes": [
+        5072323,
+        5072323,
+        5072323
+      ],
+      "outputs": [
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_type": "video",
+              "width": 1920,
+              "height": 1080,
+              "r_frame_rate": "30/1",
+              "nb_read_frames": "60"
+            },
+            {
+              "codec_type": "audio",
+              "r_frame_rate": "0/0",
+              "nb_read_frames": "94"
+            }
+          ],
+          "format": {
+            "duration": "2.005000"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_type": "video",
+              "width": 1920,
+              "height": 1080,
+              "r_frame_rate": "30/1",
+              "nb_read_frames": "60"
+            },
+            {
+              "codec_type": "audio",
+              "r_frame_rate": "0/0",
+              "nb_read_frames": "94"
+            }
+          ],
+          "format": {
+            "duration": "2.005000"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_type": "video",
+              "width": 1920,
+              "height": 1080,
+              "r_frame_rate": "30/1",
+              "nb_read_frames": "60"
+            },
+            {
+              "codec_type": "audio",
+              "r_frame_rate": "0/0",
+              "nb_read_frames": "94"
+            }
+          ],
+          "format": {
+            "duration": "2.005000"
+          }
+        }
+      ],
+      "caveat": "Identical filters and audio; CRF and CQ are not quality equivalent."
+    }
+  ]
+}

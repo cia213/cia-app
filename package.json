@@ -15,6 +15,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test src/App.test.js",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:update": "node scripts/build-update.mjs"

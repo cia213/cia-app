@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { check } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import GlowSlider from './GlowSlider.svelte';
   import ProjectMark from './ProjectMark.svelte';
   import appLogo from '../src-tauri/icons/128x128@2x.png';
@@ -26,6 +26,8 @@
   let encodingFps = $state('');
   let encodingFrame = $state(0);
   let encodingTime = $state('');
+  let generatedFrame = $state(0);
+  let pipelineTotalFrames = $state(0);
   let copyFeedback = $state(false);
   let toast = $state({ show: false, message: '', type: 'info' });
   let runtimeSnapshot = $state(null);
@@ -59,14 +61,17 @@
   let videoInfo = $state(null);
   let lastOutputPath = $state('');
   let rifeOutputPath = $state('');
+  let rifeOutputInfo = $state(null);
   let jobPhase = $state('idle');
   let jobError = $state('');
   let activeRenderJobId = $state('');
+  let activeJob = $state(null);
   let isRenderPaused = $state(false);
   let isCancellingRender = $state(false);
   let showRenderCancelConfirmation = $state(false);
   let rifePreviewSet = $state(null);
   let rifeOutputPreview = $state('');
+  let rifeOutputPreviewStatus = $state('idle');
   let rifePreviewFrameIndex = $state(-1);
   let rifePreviewHovered = false;
 
@@ -75,8 +80,8 @@
     factor: 2,
     crf: 18,
     preset: 'medium',
-    sceneThreshold: 0.05,
-    blendCuts: 0
+    precision: 'fp32',
+    encoder: 'libx264'
   };
 
   let rifeSettings = $state(loadRifeSettings());
@@ -91,7 +96,7 @@
   }
 
   async function persistUiPreferences() {
-    if (!runtimeSnapshot) return;
+    if (!runtimeSnapshot) throw new Error('Runtime configuration is not loaded');
     try {
       runtimeSnapshot = await invoke('save_ui_preferences', {
         autoRender,
@@ -100,6 +105,7 @@
       });
     } catch (e) {
       showToast(`Failed to save preferences: ${e}`, 'error');
+      throw e;
     }
   }
 
@@ -142,7 +148,7 @@
   }
 
   async function saveAutoRender() {
-    await persistUiPreferences();
+    try { await persistUiPreferences(); } catch { /* The persistence error is already shown. */ }
   }
 
   function loadRifeSettings() {
@@ -155,24 +161,30 @@
   }
 
   async function saveRifeSettings() {
-    await persistUiPreferences();
-    showToast('RIFE settings saved', 'success');
+    try {
+      await persistUiPreferences();
+      showToast('RIFE settings saved', 'success');
+      showRifeSettings = false;
+    } catch { /* Keep the settings open so saving can be retried. */ }
   }
 
   async function resetRifeSettings() {
     rifeSettings = { ...DEFAULT_RIFE };
-    await persistUiPreferences();
-    showToast('RIFE settings reset to default', 'info');
+    try {
+      await persistUiPreferences();
+      showToast('RIFE settings reset to default', 'info');
+    } catch { /* The persistence error is already shown. */ }
   }
 
-  let outputFps = $derived(videoInfo ? (rifeSettings.mode === 'boost' ? videoInfo.fps * rifeSettings.factor : videoInfo.fps) : 0);
-  let outputDuration = $derived(videoInfo ? (rifeSettings.mode === 'slowmo' ? videoInfo.duration * rifeSettings.factor : videoInfo.duration) : 0);
+  let outputFps = $derived(activeJob?.kind === 'rife' ? activeJob.outputFps : videoInfo ? (rifeSettings.mode === 'boost' ? videoInfo.fps * rifeSettings.factor : videoInfo.fps) : 0);
+  let outputDuration = $derived(activeJob?.kind === 'rife' ? activeJob.outputDuration : videoInfo ? (rifeSettings.mode === 'slowmo' ? videoInfo.duration * rifeSettings.factor : videoInfo.duration) : 0);
 
   // --- Smoothie State & Settings ---
   let smoothiePath = $state('');
   let isSmoothieLoading = $state(false);
   let isSmoothieProcessing = $state(false);
   let isSmoothieComplete = $state(false);
+  let smoothieJobError = $state('');
   let smoothieInfo = $state(null);
   let smoothieAspectRatio = $derived(
     smoothieInfo?.width && smoothieInfo?.height
@@ -182,16 +194,18 @@
   let smoothieOutputPath = $state('');
   let smoothiePreviewSet = $state(null);
   let smoothieOutputPreview = $state('');
+  let smoothieOutputPreviewStatus = $state('idle');
   let smoothiePreviewFrameIndex = $state(-1);
   let smoothiePreviewHovered = false;
-  let liveRenderPreview = $state('');
-  let isLiveRenderPreviewLoading = $state(false);
   let rifePreviewRequest = 0;
   let smoothiePreviewRequest = 0;
   let rifeOutputPreviewRequest = 0;
   let smoothieOutputPreviewRequest = 0;
-  let liveRenderPreviewRequest = 0;
-  let lastLiveRenderPreviewAt = 0;
+  let rifeSelectionRequest = 0;
+  let smoothieSelectionRequest = 0;
+  let historyNavigationRequest = 0;
+  let rifePreviewFramesLoading = false;
+  let smoothiePreviewFramesLoading = false;
   let rifePreviewTimer = null;
   let smoothiePreviewTimer = null;
 
@@ -231,24 +245,23 @@
 
   async function applyHistoryEntry(entry) {
     if (!entry) return;
+    const requestId = ++historyNavigationRequest;
     activePage = entry.page;
+
+    // Navigation owns the displayed page, never the active render or its input.
+    if (anyProcessing) return;
 
     // Synchronize Smoothie State
     if (!entry.smoothiePath) {
-      smoothiePath = '';
-      smoothieInfo = null;
-      isSmoothieLoading = false;
-      isSmoothieProcessing = false;
+      clearSmoothieSelection(false, false);
     } else if (smoothiePath !== entry.smoothiePath) {
       await loadSmoothie(entry.smoothiePath, false);
     }
+    if (requestId !== historyNavigationRequest || anyProcessing) return;
 
     // Synchronize RIFE State
     if (!entry.videoPath) {
-      videoPath = '';
-      videoInfo = null;
-      isLoading = false;
-      isProcessing = false;
+      clearVideoSelection(false);
     } else if (videoPath !== entry.videoPath) {
       await loadVideo(entry.videoPath, false);
     }
@@ -264,27 +277,33 @@
     }
   }
 
-  function clearSmoothieSelection(resetComplete = false) {
-    smoothiePreviewRequest += 1;
+  function clearSmoothieSelection(resetComplete = false, pushNav = true) {
+    if (anyProcessing) return;
+    smoothieSelectionRequest += 1;
+    invalidateSourcePreview('smoothie');
     smoothieOutputPreviewRequest += 1;
-    resetLiveRenderPreview();
     smoothiePath = '';
     smoothieInfo = null;
+    isSmoothieLoading = false;
     resetSourcePreview('smoothie');
     smoothieOutputPreview = '';
     if (resetComplete) isSmoothieComplete = false;
-    pushNavigation({ page: 'smoothie', smoothiePath: '', videoPath });
+    smoothieJobError = '';
+    if (pushNav) pushNavigation({ page: 'smoothie', smoothiePath: '', videoPath });
   }
 
-  function clearVideoSelection() {
-    rifePreviewRequest += 1;
+  function clearVideoSelection(pushNav = true) {
+    if (anyProcessing) return;
+    rifeSelectionRequest += 1;
+    invalidateSourcePreview('rife');
     rifeOutputPreviewRequest += 1;
     videoPath = '';
     videoInfo = null;
+    isLoading = false;
     isComplete = false;
     resetSourcePreview('rife');
     rifeOutputPreview = '';
-    pushNavigation({ page: 'dashboard', smoothiePath, videoPath: '' });
+    if (pushNav) pushNavigation({ page: 'dashboard', smoothiePath, videoPath: '' });
   }
 
   const DEFAULT_SMOOTHIE = {
@@ -293,9 +312,10 @@
     brightness: 1.1,
     saturation: 1.1,
     contrast: 1.0,
-    lutEnabled: 'yes',
+    lutEnabled: 'no',
     lutOpacity: 0.67,
-    borderless: 'no'
+    borderless: 'no',
+    encoder: 'libx264'
   };
 
   let smoothieSettings = $state(loadSmoothieSettings());
@@ -322,17 +342,23 @@
   }
 
   async function saveSmoothieSettings() {
-    await persistUiPreferences();
-    showToast('Render configuration saved', 'success');
+    try {
+      await persistUiPreferences();
+      showToast('Render configuration saved', 'success');
+      showSmoothieSettings = false;
+    } catch { /* Keep the settings open so saving can be retried. */ }
   }
 
   async function resetSmoothieSettings() {
     smoothieSettings = { ...DEFAULT_SMOOTHIE };
-    await persistUiPreferences();
-    showToast('Render configuration reset to default', 'info');
+    try {
+      await persistUiPreferences();
+      showToast('Render configuration reset to default', 'info');
+    } catch { /* The persistence error is already shown. */ }
   }
 
-  let anyProcessing = $derived(isProcessing || isSmoothieProcessing);
+  let anyProcessing = $derived(Boolean(activeJob || activeRenderJobId) || isProcessing || isSmoothieProcessing);
+  let hasConfiguredLut = $derived(Boolean(runtimeSnapshot?.config?.smoothie?.lutFile));
   let canRenderSmoothie = $derived(Boolean(rifeOutputPath) && lastOutputPath === rifeOutputPath && !anyProcessing);
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
   let smoothieSliderPct = $derived(((smoothieSettings.fps - 20) / (60 - 20)) * 100);
@@ -383,9 +409,14 @@
     encodingFps = '';
     encodingFrame = 0;
     encodingTime = '';
+    generatedFrame = 0;
+    pipelineTotalFrames = 0;
   }
 
   function resetRunState() {
+    if (logFlushTimer) clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+    pendingLogs = [];
     logs = [];
     shouldShowExecutionLogs = false;
     resetTelemetry();
@@ -396,17 +427,25 @@
     shouldShowExecutionLogs = true;
   }
 
-  function resetLiveRenderPreview() {
-    liveRenderPreviewRequest += 1;
-    lastLiveRenderPreviewAt = 0;
-    liveRenderPreview = '';
-    isLiveRenderPreviewLoading = false;
-  }
-
   function sourcePreviewIsCurrent(kind, requestId, path) {
     return kind === 'rife'
       ? requestId === rifePreviewRequest && videoPath === path
       : requestId === smoothiePreviewRequest && smoothiePath === path;
+  }
+
+  function invalidateSourcePreview(kind) {
+    const requestId = kind === 'rife' ? rifePreviewRequest++ : smoothiePreviewRequest++;
+    stopSourcePreviewCycle(kind);
+    if (kind === 'rife') rifePreviewFramesLoading = false;
+    else smoothiePreviewFramesLoading = false;
+    if (requestId > 0) {
+      void invoke('cancel_video_previews', { requestId: `${kind}-${requestId}` }).catch(() => {});
+    }
+  }
+
+  function suspendSourcePreviews() {
+    invalidateSourcePreview('rife');
+    invalidateSourcePreview('smoothie');
   }
 
   function clearSourcePreviewTimer(kind) {
@@ -422,12 +461,20 @@
   }
 
   function startSourcePreviewCycle(kind) {
+    if (anyProcessing) return;
     if (kind === 'rife') rifePreviewHovered = true;
     else smoothiePreviewHovered = true;
 
     const previewSet = kind === 'rife' ? rifePreviewSet : smoothiePreviewSet;
     const frames = previewSet?.frames || [];
-    if (frames.length !== 8) return;
+    if (frames.length !== 8) {
+      const path = kind === 'rife' ? videoPath : smoothiePath;
+      const info = kind === 'rife' ? videoInfo : smoothieInfo;
+      const requestId = kind === 'rife' ? rifePreviewRequest : smoothiePreviewRequest;
+      const isLoadingFrames = kind === 'rife' ? rifePreviewFramesLoading : smoothiePreviewFramesLoading;
+      if (path && info && !isLoadingFrames) void loadSourcePreviewFrames(kind, path, info.duration, requestId);
+      return;
+    }
 
     clearSourcePreviewTimer(kind);
     const currentIndex = kind === 'rife' ? rifePreviewFrameIndex : smoothiePreviewFrameIndex;
@@ -463,7 +510,8 @@
       const image = await invoke('generate_video_preview_frame', {
         videoPath: path,
         timestamp: Math.max(0, duration * 0.12),
-        blendFrames: 1
+        blendFrames: 1,
+        requestId: `${kind}-${requestId}`
       });
       if (!sourcePreviewIsCurrent(kind, requestId, path)) return;
       const previewSet = kind === 'rife' ? rifePreviewSet : smoothiePreviewSet;
@@ -471,13 +519,16 @@
       if (kind === 'rife') rifePreviewSet = { cover: image, frames: [] };
       else smoothiePreviewSet = { cover: image, frames: [] };
     } catch (error) {
-      appendLog(`[cia render] Preview cover unavailable: ${error}`);
+      if (sourcePreviewIsCurrent(kind, requestId, path)) appendLog(`[cia render] Preview cover unavailable: ${error}`);
     }
   }
 
   async function loadSourcePreviewFrames(kind, path, duration, requestId) {
+    if (anyProcessing || !sourcePreviewIsCurrent(kind, requestId, path)) return;
+    if (kind === 'rife') rifePreviewFramesLoading = true;
+    else smoothiePreviewFramesLoading = true;
     try {
-      const previewSet = await invoke('generate_video_preview_set', { videoPath: path, duration });
+      const previewSet = await invoke('generate_video_preview_set', { videoPath: path, duration, requestId: `${kind}-${requestId}` });
       if (!sourcePreviewIsCurrent(kind, requestId, path)) return;
       if (kind === 'rife') rifePreviewSet = previewSet;
       else smoothiePreviewSet = previewSet;
@@ -486,77 +537,73 @@
       if (isHovered) startSourcePreviewCycle(kind);
     } catch (error) {
       // A preview is convenience UI. It must never prevent the selected video from rendering.
-      appendLog(`[cia render] Preview sequence unavailable: ${error}`);
+      if (sourcePreviewIsCurrent(kind, requestId, path)) appendLog(`[cia render] Preview sequence unavailable: ${error}`);
+    } finally {
+      if (sourcePreviewIsCurrent(kind, requestId, path)) {
+        if (kind === 'rife') rifePreviewFramesLoading = false;
+        else smoothiePreviewFramesLoading = false;
+      }
     }
   }
 
   function loadSourcePreview(kind, path, duration) {
     const requestId = kind === 'rife' ? ++rifePreviewRequest : ++smoothiePreviewRequest;
     resetSourcePreview(kind);
-    void (async () => {
-      // The single still gets the disk/decoder first. Only afterwards does the
-      // optional eight-frame scan begin, so the initial view is never queued
-      // behind seven extra FFmpeg processes.
-      await loadSourcePreviewCover(kind, path, duration, requestId);
-      setTimeout(() => void loadSourcePreviewFrames(kind, path, duration, requestId), 0);
-    })();
+    // Extra frames are loaded only when the user hovers the source preview.
+    void loadSourcePreviewCover(kind, path, duration, requestId);
   }
 
   async function loadOutputPreview(kind, path, duration) {
-    if (kind === 'rife') {
-      rifeOutputPreview = rifePreviewSet?.cover || '';
-    } else {
-      smoothieOutputPreview = liveRenderPreview || smoothiePreviewSet?.cover || '';
-    }
-  }
-
-  async function refreshLiveRenderPreview(path, duration, currentProgress) {
-    if (isLiveRenderPreviewLoading || isRenderPaused) return;
-    const now = Date.now();
-    if (now - lastLiveRenderPreviewAt < 1000) return;
-    lastLiveRenderPreviewAt = now;
-    const requestId = ++liveRenderPreviewRequest;
-    isLiveRenderPreviewLoading = true;
-    const safeProgress = Math.max(0, Math.min(99.8, Number(currentProgress) || 0));
-
+    const requestId = kind === 'rife' ? ++rifeOutputPreviewRequest : ++smoothieOutputPreviewRequest;
+    if (kind === 'rife') rifeOutputPreviewStatus = 'loading';
+    else smoothieOutputPreviewStatus = 'loading';
     try {
       const image = await invoke('generate_video_preview_frame', {
         videoPath: path,
-        timestamp: duration * (safeProgress / 100),
-        blendFrames: Math.min(24, Math.max(4, Math.round(
-          ((smoothieInfo?.fps || 30) / Math.max(1, smoothieSettings.fps)) *
-          (1 + Number(smoothieSettings.blendIntensity || 0))
-        )))
+        timestamp: Math.max(0, Number(duration || 0) * 0.12),
+        blendFrames: 1,
+        requestId: `output-${kind}-${requestId}`
       });
-      if (
-        requestId === liveRenderPreviewRequest &&
-        isSmoothieProcessing &&
-        !isRenderPaused &&
-        smoothiePath === path
-      ) {
-        liveRenderPreview = image;
+      if (kind === 'rife') {
+        if (requestId === rifeOutputPreviewRequest && lastOutputPath === path) {
+          rifeOutputPreview = image;
+          rifeOutputPreviewStatus = 'ready';
+        }
+      } else {
+        if (requestId === smoothieOutputPreviewRequest && smoothieOutputPath === path) {
+          smoothieOutputPreview = image;
+          smoothieOutputPreviewStatus = 'ready';
+        }
       }
     } catch (error) {
-      appendLog(`[cia render] Live preview unavailable: ${error}`);
-    } finally {
-      if (requestId === liveRenderPreviewRequest) isLiveRenderPreviewLoading = false;
+      const isCurrent = kind === 'rife' ? requestId === rifeOutputPreviewRequest : requestId === smoothieOutputPreviewRequest;
+      if (isCurrent) {
+        if (kind === 'rife') rifeOutputPreviewStatus = 'unavailable';
+        else smoothieOutputPreviewStatus = 'unavailable';
+        appendLog(`[cia render] Output preview unavailable: ${error}`);
+      }
     }
   }
-
-  $effect(() => {
-    const path = smoothiePath;
-    const duration = smoothieInfo?.duration || 0;
-    const currentProgress = progress;
-    if (isSmoothieProcessing && !isRenderPaused && path && duration > 0) {
-      void refreshLiveRenderPreview(path, duration, currentProgress);
-    } else if (!isSmoothieProcessing) {
-      resetLiveRenderPreview();
-    }
-  });
 
   function createRenderJobId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
     return `cia-render-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function createJobSnapshot(kind, path, info) {
+    const rife = cloneConfig(rifeSettings);
+    const smoothie = cloneConfig(smoothieSettings);
+    smoothie.lutEnabled = smoothie.lutEnabled === 'yes' && hasConfiguredLut ? 'yes' : 'no';
+    return Object.freeze({
+      id: createRenderJobId(), kind, path,
+      page: kind === 'rife' ? 'dashboard' : 'smoothie',
+      info: Object.freeze(cloneConfig(info)),
+      rifeSettings: Object.freeze(rife),
+      smoothieSettings: Object.freeze(smoothie),
+      autoRender: Boolean(autoRender),
+      outputFps: kind === 'rife' ? (rife.mode === 'boost' ? info.fps * Number(rife.factor) : info.fps) : Number(smoothie.fps),
+      outputDuration: kind === 'rife' && rife.mode === 'slowmo' ? info.duration * Number(rife.factor) : info.duration
+    });
   }
 
   function isCancellation(error) {
@@ -565,6 +612,7 @@
 
   function interpolationStatusLabel() {
     if (isRenderPaused) return jobPhase === 'smoothie' ? 'RENDER PAUSED' : 'RIFE PAUSED';
+    if (jobPhase === 'rife' && pipelineTotalFrames > 0) return 'RIFE + ENCODING';
     if (isEncodingPhase) {
       if (encodingSpeed) return `ENCODING (${encodingSpeed})`;
       if (encodingFps) return `ENCODING (${encodingFps} FPS)`;
@@ -612,8 +660,21 @@
     }
   }
 
+  let pendingLogs = [];
+  let logFlushTimer = null;
+
+  function flushLogs() {
+    if (logFlushTimer) clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+    if (!pendingLogs.length) return;
+    logs = [...logs, ...pendingLogs].slice(-500);
+    pendingLogs = [];
+  }
+
   function appendLog(line) {
-    logs = [...logs, line].slice(-500);
+    pendingLogs.push(String(line));
+    if (pendingLogs.length > 500) pendingLogs.splice(0, pendingLogs.length - 500);
+    if (!logFlushTimer) logFlushTimer = setTimeout(flushLogs, 100);
   }
 
   function activateOnKeyboard(event, action) {
@@ -626,8 +687,29 @@
   function parseLogLine(line) {
     appendLog(line);
 
+    if (line.includes('[cia render] RIFE frame=')) {
+      const frame = line.match(/frame=(\d+)/);
+      const total = line.match(/total_frames=(\d+)/);
+      const elapsed = line.match(/elapsed=([\d.]+)/);
+      if (frame) generatedFrame = Math.max(generatedFrame, Number(frame[1]));
+      if (total) pipelineTotalFrames = Number(total[1]);
+      if (pipelineTotalFrames > 0) {
+        progress = Math.min(99, Math.round((Math.max(generatedFrame, encodingFrame) / pipelineTotalFrames) * 100));
+      }
+      if (elapsed) {
+        const seconds = Math.floor(Number(elapsed[1]));
+        elapsedTime = `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
+        if (generatedFrame > 0 && pipelineTotalFrames > generatedFrame) {
+          const remaining = Math.round((pipelineTotalFrames - generatedFrame) * Number(elapsed[1]) / generatedFrame);
+          remainingTime = `${Math.floor(remaining / 60).toString().padStart(2, '0')}:${(remaining % 60).toString().padStart(2, '0')}`;
+        }
+      }
+      return;
+    }
+
     if (line.includes('Finalizing output with FFmpeg') || line.includes('[cia render] Finalizing output')) {
       isEncodingPhase = true;
+      if (jobPhase === 'rife' && pipelineTotalFrames > 0) return;
       progress = 0;
       encodingProgress = 0;
       encodingFrame = 0;
@@ -645,6 +727,7 @@
 
       const totalMatch = line.match(/total_frames=(\d+)/);
       const totalFrames = totalMatch ? parseInt(totalMatch[1], 10) : 0;
+      if (jobPhase === 'rife' && totalFrames > 0) pipelineTotalFrames = totalFrames;
 
       const fpsMatch = line.match(/fps=([\d.]+)/);
       if (fpsMatch) encodingFps = fpsMatch[1];
@@ -655,17 +738,19 @@
       const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2})/);
       if (timeMatch) {
         encodingTime = timeMatch[1];
-        elapsedTime = timeMatch[1].slice(3);
+        if (jobPhase !== 'rife' || generatedFrame === 0) elapsedTime = timeMatch[1].slice(3);
       }
 
       const pctMatch = line.match(/pct=(\d+)%/);
       if (pctMatch) {
-        const pctVal = Math.min(100, Math.max(0, parseInt(pctMatch[1], 10)));
-        progress = pctVal;
+        const pctVal = Math.min(99, Math.max(0, parseInt(pctMatch[1], 10)));
+        progress = jobPhase === 'rife' && pipelineTotalFrames > 0
+          ? Math.min(99, Math.round((Math.max(generatedFrame, encodingFrame) / pipelineTotalFrames) * 100))
+          : pctVal;
         encodingProgress = pctVal;
       }
 
-      if (fpsMatch && totalFrames > 0 && frameMatch) {
+      if (fpsMatch && totalFrames > 0 && frameMatch && (jobPhase !== 'rife' || generatedFrame === 0 || generatedFrame >= totalFrames)) {
         const fpsVal = parseFloat(fpsMatch[1]);
         const curF = parseInt(frameMatch[1], 10);
         if (fpsVal > 0 && curF < totalFrames) {
@@ -682,8 +767,8 @@
 
     const smPct = line.match(/(\d+(?:\.\d+)?)%\s*\u2022/);
     if (smPct) {
-      if (activePage === 'smoothie') isEncodingPhase = true;
-      const pctVal = Math.min(100, Math.max(0, Math.round(parseFloat(smPct[1]))));
+      if (jobPhase === 'smoothie') isEncodingPhase = true;
+      const pctVal = Math.min(99, Math.max(0, Math.round(parseFloat(smPct[1]))));
       progress = pctVal;
       encodingProgress = pctVal;
 
@@ -726,14 +811,7 @@
         encodingTime = `${timeMatch[1]}:${timeMatch[2]}:${Math.floor(seconds).toString().padStart(2, '0')}`;
         elapsedTime = `${timeMatch[2]}:${Math.floor(seconds).toString().padStart(2, '0')}`;
 
-        let targetDuration = 0;
-        if (activePage === 'smoothie' && smoothieInfo?.duration) {
-          targetDuration = smoothieInfo.duration;
-        } else if (videoInfo?.duration) {
-          targetDuration = rifeSettings.mode === 'slowmo'
-            ? videoInfo.duration * (Number(rifeSettings.factor) || 2)
-            : videoInfo.duration;
-        }
+        const targetDuration = activeJob?.outputDuration || 0;
 
         if (targetDuration > 0 && curSec > 0) {
           const calculatedPct = Math.min(99, Math.max(1, Math.round((curSec / targetDuration) * 100)));
@@ -763,7 +841,15 @@
     }
   }
 
+  function handleRenderLog(event) {
+    const payload = event?.payload;
+    if (payload?.jobId === activeRenderJobId && activeRenderJobId && typeof payload.line === 'string') {
+      parseLogLine(payload.line);
+    }
+  }
+
   async function copyLogsToClipboard() {
+    flushLogs();
     if (logs.length === 0) {
       showToast('No execution logs recorded yet', 'info');
       return;
@@ -790,6 +876,7 @@
   }
 
   function navigateTo(page) {
+    historyNavigationRequest += 1;
     if (activePage !== page) {
       activePage = page;
       pushNavigation({ page, smoothiePath, videoPath });
@@ -799,93 +886,108 @@
   $effect(() => {
     const u1 = listen('tauri://drag-drop', async (event) => {
       isDragging = false;
+      if (anyProcessing) return;
       const paths = event.payload.paths;
       if (paths && paths.length > 0) {
         if (activePage === 'smoothie') await loadSmoothie(paths[0]);
-        else await loadVideo(paths[0]);
+        else if (activePage === 'dashboard') await loadVideo(paths[0]);
       }
     });
-    const u2 = listen('tauri://drag-enter', () => { isDragging = true; });
+    const u2 = listen('tauri://drag-enter', () => { isDragging = !anyProcessing && activePage !== 'about'; });
     const u3 = listen('tauri://drag-leave', () => { isDragging = false; });
-    const u4 = listen('live-log', (event) => { parseLogLine(event.payload); });
+    const u4 = listen('live-log', (event) => { if (!activeRenderJobId) parseLogLine(event.payload); });
     const u5 = listen('install-progress', (event) => {
       const { step, total, label } = event.payload;
       installStep = step;
       installTotal = total;
       installLabel = label;
     });
-    return () => { u1.then(f => f()); u2.then(f => f()); u3.then(f => f()); u4.then(f => f()); u5.then(f => f()); };
+    const u6 = listen('render-log', handleRenderLog);
+    return () => { u1.then(f => f()); u2.then(f => f()); u3.then(f => f()); u4.then(f => f()); u5.then(f => f()); u6.then(f => f()); };
   });
 
   // --- RIFE Handlers ---
   async function loadVideo(path, pushNav = true) {
-    rifePreviewRequest += 1;
+    if (anyProcessing) return;
+    const requestId = ++rifeSelectionRequest;
+    invalidateSourcePreview('rife');
     rifeOutputPreviewRequest += 1;
     videoPath = path;
+    videoInfo = null;
     isLoading = true;
     isComplete = false;
     lastOutputPath = '';
     rifeOutputPath = '';
+    rifeOutputInfo = null;
     resetSourcePreview('rife');
     rifeOutputPreview = '';
     jobPhase = 'idle';
     jobError = '';
     resetRunState();
     try {
-      videoInfo = await invoke('analyze_video', { videoPath: path });
+      const info = await invoke('analyze_video', { videoPath: path });
+      if (requestId !== rifeSelectionRequest || videoPath !== path || anyProcessing) return;
+      videoInfo = info;
       void loadSourcePreview('rife', path, videoInfo.duration);
       showToast(`Loaded ${videoInfo.width}x${videoInfo.height} @ ${videoInfo.fps.toFixed(2)} FPS`, 'success');
       if (pushNav) {
-        pushNavigation({ page: 'dashboard', smoothiePath, videoPath: path });
+        pushNavigation({ page: activePage, smoothiePath, videoPath: path });
       }
     } catch (e) {
+      if (requestId !== rifeSelectionRequest || videoPath !== path) return;
       showToast(`Error: ${e}`, 'error');
       videoPath = '';
       videoInfo = null;
     } finally {
-      isLoading = false;
+      if (requestId === rifeSelectionRequest) isLoading = false;
     }
   }
 
   async function pickFile() {
+    if (anyProcessing) return;
     const path = await invoke('open_file_dialog');
-    if (path) await loadVideo(path);
+    if (path && !anyProcessing) await loadVideo(path);
   }
 
   async function startProcessing() {
-    if (!videoPath || anyProcessing) return;
+    if (!videoPath || !videoInfo || anyProcessing || isLoading || isSmoothieLoading || isInstallingRifeEnvironment) return;
+    const job = createJobSnapshot('rife', videoPath, videoInfo);
+    activeJob = job;
+    suspendSourcePreviews();
     isProcessing = true;
     isComplete = false;
     lastOutputPath = '';
     rifeOutputPath = '';
+    rifeOutputInfo = null;
     rifeOutputPreviewRequest += 1;
     rifeOutputPreview = '';
     jobError = '';
     jobPhase = 'rife';
-    activeRenderJobId = createRenderJobId();
+    activeRenderJobId = job.id;
     isRenderPaused = false;
     isCancellingRender = false;
     beginLogCapture();
     appendLog('[cia render] RIFE 4.26 started');
     try {
       const outputPath = await invoke('run_time_remap', {
-        jobId: activeRenderJobId,
-        videoPath,
-        mode: rifeSettings.mode,
-        factor: Number(rifeSettings.factor),
-        crf: Number(rifeSettings.crf),
-        preset: rifeSettings.preset,
-        sceneThreshold: Number(rifeSettings.sceneThreshold),
-        blendCuts: Number(rifeSettings.blendCuts)
+        jobId: job.id,
+        videoPath: job.path,
+        mode: job.rifeSettings.mode,
+        factor: Number(job.rifeSettings.factor),
+        crf: Number(job.rifeSettings.crf),
+        preset: job.rifeSettings.preset,
+        precision: job.rifeSettings.precision,
+        encoder: job.rifeSettings.encoder
       });
       rifeOutputPath = outputPath;
+      rifeOutputInfo = { ...job.info, fps: job.outputFps, duration: job.outputDuration };
       lastOutputPath = outputPath;
       appendLog(`[cia render] RIFE output verified: ${outputPath}`);
 
-      if (autoRender) {
+      if (job.autoRender) {
         jobPhase = 'smoothie';
         isRenderPaused = false;
-        const smoothiePath = await runSmoothieFor(outputPath, { preserveLogs: true, jobId: activeRenderJobId });
+        const smoothiePath = await runSmoothieFor(outputPath, { preserveLogs: true, jobId: job.id, settings: job.smoothieSettings });
         lastOutputPath = smoothiePath;
         appendLog(`[cia render] Smoothie output verified: ${smoothiePath}`);
       }
@@ -893,9 +995,9 @@
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
-      void loadOutputPreview('rife', lastOutputPath, outputDuration);
+      void loadOutputPreview('rife', lastOutputPath, job.outputDuration);
       playCompletionChime();
-      showToast(autoRender ? 'Interpolation and render complete!' : 'Interpolation complete!', 'success');
+      showToast(job.autoRender ? 'Interpolation and render complete!' : 'Interpolation complete!', 'success');
     } catch (e) {
       if (isCancellation(e) && !rifeOutputPath) {
         jobError = '';
@@ -908,7 +1010,7 @@
         lastOutputPath = rifeOutputPath;
         isComplete = true;
         jobPhase = 'failed';
-        void loadOutputPreview('rife', lastOutputPath, outputDuration);
+        void loadOutputPreview('rife', lastOutputPath, job.outputDuration);
       } else if (!isCancellation(e)) {
         jobPhase = 'failed';
       }
@@ -916,18 +1018,23 @@
     } finally {
       isProcessing = false;
       activeRenderJobId = '';
+      activeJob = null;
+      flushLogs();
       isRenderPaused = false;
       isCancellingRender = false;
     }
   }
 
   function resetInterpolation() {
-    rifePreviewRequest += 1;
+    if (anyProcessing) return;
+    rifeSelectionRequest += 1;
+    invalidateSourcePreview('rife');
     rifeOutputPreviewRequest += 1;
     videoPath = '';
     videoInfo = null;
     isComplete = false;
     rifeOutputPath = '';
+    rifeOutputInfo = null;
     lastOutputPath = '';
     jobPhase = 'idle';
     jobError = '';
@@ -937,22 +1044,27 @@
   }
 
   async function renderRifeWithSmoothie() {
-    if (!rifeOutputPath || anyProcessing) return;
+    if (!rifeOutputPath || !rifeOutputInfo || anyProcessing || isLoading || isSmoothieLoading || isInstallingRifeEnvironment) return;
+    const job = Object.freeze({ ...createJobSnapshot('smoothie', rifeOutputPath, rifeOutputInfo), kind: 'rife', page: 'dashboard' });
+    activeJob = job;
+    suspendSourcePreviews();
     isProcessing = true;
     isComplete = false;
+    rifeOutputPreviewRequest += 1;
+    rifeOutputPreview = '';
     jobError = '';
     jobPhase = 'smoothie';
-    activeRenderJobId = createRenderJobId();
+    activeRenderJobId = job.id;
     isRenderPaused = false;
     isCancellingRender = false;
     try {
-      const smoothiePath = await runSmoothieFor(rifeOutputPath, { preserveLogs: true, jobId: activeRenderJobId });
+      const smoothiePath = await runSmoothieFor(job.path, { preserveLogs: true, jobId: job.id, settings: job.smoothieSettings });
       lastOutputPath = smoothiePath;
       appendLog(`[cia render] Smoothie output verified: ${smoothiePath}`);
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
-      void loadOutputPreview('rife', lastOutputPath, outputDuration);
+      void loadOutputPreview('rife', lastOutputPath, job.outputDuration);
       playCompletionChime();
       showToast('Render complete!', 'success');
     } catch (e) {
@@ -960,10 +1072,13 @@
       lastOutputPath = rifeOutputPath;
       jobPhase = 'failed';
       isComplete = true;
+      void loadOutputPreview('rife', lastOutputPath, job.outputDuration);
       if (!isCancellation(e)) showToast(`Render failed: ${e}`, 'error');
     } finally {
       isProcessing = false;
       activeRenderJobId = '';
+      activeJob = null;
+      flushLogs();
       isRenderPaused = false;
       isCancellingRender = false;
     }
@@ -983,89 +1098,107 @@
 
   // --- Smoothie Handlers ---
   async function loadSmoothie(path, pushNav = true) {
-    smoothiePreviewRequest += 1;
+    if (anyProcessing) return;
+    const requestId = ++smoothieSelectionRequest;
+    invalidateSourcePreview('smoothie');
     smoothieOutputPreviewRequest += 1;
-    resetLiveRenderPreview();
     smoothiePath = path;
+    smoothieInfo = null;
     isSmoothieLoading = true;
     isSmoothieComplete = false;
+    smoothieJobError = '';
     smoothieOutputPath = '';
     resetSourcePreview('smoothie');
     smoothieOutputPreview = '';
     resetRunState();
     try {
-      smoothieInfo = await invoke('analyze_video', { videoPath: path });
+      const info = await invoke('analyze_video', { videoPath: path });
+      if (requestId !== smoothieSelectionRequest || smoothiePath !== path || anyProcessing) return;
+      smoothieInfo = info;
       void loadSourcePreview('smoothie', path, smoothieInfo.duration);
       showToast(`Loaded ${smoothieInfo.width}x${smoothieInfo.height} @ ${smoothieInfo.fps.toFixed(2)} FPS`, 'success');
       if (pushNav) {
-        pushNavigation({ page: 'smoothie', smoothiePath: path, videoPath });
+        pushNavigation({ page: activePage, smoothiePath: path, videoPath });
       }
     } catch (e) {
+      if (requestId !== smoothieSelectionRequest || smoothiePath !== path) return;
       showToast(`Error: ${e}`, 'error');
       smoothiePath = '';
       smoothieInfo = null;
     } finally {
-      isSmoothieLoading = false;
+      if (requestId === smoothieSelectionRequest) isSmoothieLoading = false;
     }
   }
 
   async function pickSmoothieFile() {
+    if (anyProcessing) return;
     const path = await invoke('open_file_dialog');
-    if (path) await loadSmoothie(path);
+    if (path && !anyProcessing) await loadSmoothie(path);
   }
 
-  function smoothieOverrides() {
+  function smoothieOverrides(settings) {
+    const colorEnabled = ['brightness', 'saturation', 'contrast'].some(key => Number(settings[key]) !== 1);
     return [
-      `frame blending;fps;${smoothieSettings.fps}`,
-      `frame blending;intensity;${Number(smoothieSettings.blendIntensity).toFixed(1)}`,
-      `color grading;brightness;${smoothieSettings.brightness}`,
-      `color grading;saturation;${smoothieSettings.saturation}`,
-      `color grading;contrast;${smoothieSettings.contrast}`,
-      `lut;enabled;${smoothieSettings.lutEnabled}`,
-      `lut;opacity;${smoothieSettings.lutOpacity}`,
-      `console;borderless;${smoothieSettings.borderless}`
+      `frame blending;fps;${settings.fps}`,
+      `frame blending;intensity;${Number(settings.blendIntensity).toFixed(1)}`,
+      `color grading;enabled;${colorEnabled ? 'yes' : 'no'}`,
+      `color grading;brightness;${settings.brightness}`,
+      `color grading;saturation;${settings.saturation}`,
+      `color grading;contrast;${settings.contrast}`,
+      `lut;enabled;${settings.lutEnabled}`,
+      `lut;opacity;${settings.lutOpacity}`,
+      `console;borderless;${settings.borderless}`
     ];
   }
 
-  async function runSmoothieFor(inputPath, { preserveLogs = false, jobId = createRenderJobId() } = {}) {
+  async function runSmoothieFor(inputPath, { preserveLogs = false, jobId = createRenderJobId(), settings = cloneConfig(smoothieSettings) } = {}) {
     if (!preserveLogs) beginLogCapture();
     else resetTelemetry();
     appendLog('[cia render] SMOOTHIE started');
     return invoke('run_smoothie', {
       jobId,
       videoPath: inputPath,
-      outputFps: Number(smoothieSettings.fps),
-      overrides: smoothieOverrides()
+      outputFps: Number(settings.fps),
+      encoder: settings.encoder,
+      overrides: smoothieOverrides(settings)
     });
   }
 
   async function startSmoothie() {
-    if (!smoothiePath || anyProcessing) return;
+    if (!smoothiePath || !smoothieInfo || anyProcessing || isSmoothieLoading || isLoading || isInstallingRifeEnvironment) return;
+    const job = createJobSnapshot('smoothie', smoothiePath, smoothieInfo);
+    activeJob = job;
+    suspendSourcePreviews();
     isSmoothieProcessing = true;
     isSmoothieComplete = false;
     smoothieOutputPath = '';
     smoothieOutputPreviewRequest += 1;
-    smoothieOutputPreview = smoothiePreviewSet?.cover || '';
-    resetLiveRenderPreview();
-    activeRenderJobId = createRenderJobId();
+    smoothieOutputPreview = '';
+    activeRenderJobId = job.id;
+    jobPhase = 'smoothie';
+    smoothieJobError = '';
     isRenderPaused = false;
     isCancellingRender = false;
     isEncodingPhase = true;
 
     try {
-      const outPath = await runSmoothieFor(smoothiePath, { jobId: activeRenderJobId });
+      const outPath = await runSmoothieFor(job.path, { jobId: job.id, settings: job.smoothieSettings });
       progress = 100;
       smoothieOutputPath = outPath;
-      smoothieOutputPreview = liveRenderPreview || smoothiePreviewSet?.cover || '';
       isSmoothieComplete = true;
-      void loadOutputPreview('smoothie', outPath, smoothieInfo?.duration || 0);
+      jobPhase = 'complete';
+      void loadOutputPreview('smoothie', outPath, job.outputDuration);
       playCompletionChime();
       showToast('Render complete!', 'success');
     } catch (e) {
+      jobPhase = isCancellation(e) ? 'idle' : 'failed';
+      smoothieJobError = isCancellation(e) ? '' : String(e);
       if (!isCancellation(e)) showToast(`Render failed: ${e}`, 'error');
     } finally {
       isSmoothieProcessing = false;
       activeRenderJobId = '';
+      activeJob = null;
+      flushLogs();
       isRenderPaused = false;
       isCancellingRender = false;
     }
@@ -1092,7 +1225,7 @@
   }
 
   async function installRifeEnvironment() {
-    if (isInstallingRifeEnvironment) return;
+    if (isInstallingRifeEnvironment || anyProcessing) return;
     isInstallingRifeEnvironment = true;
     installStep = 0;
     installTotal = 0;
@@ -1135,6 +1268,7 @@
       if (kind === 'smoothie_root') setupDraft.smoothie.root = path;
       if (kind === 'smoothie_executable') setupDraft.smoothie.executable = path;
       if (kind === 'smoothie_recipe') setupDraft.smoothie.recipe = path;
+      if (kind === 'smoothie_lut') setupDraft.smoothie.lutFile = path;
       if (kind === 'ffmpeg') setupDraft.mediaTools.ffmpeg = path;
       if (kind === 'ffprobe') setupDraft.mediaTools.ffprobe = path;
     } catch (e) {
@@ -1142,14 +1276,26 @@
     }
   }
 
+  async function openRuntimeSetup() {
+    if (anyProcessing) return;
+    try {
+      if (!runtimeSnapshot) await refreshRuntimeSnapshot();
+      if (anyProcessing) return;
+      setupDraft = cloneConfig(runtimeSnapshot.config);
+      showRuntimeSetup = true;
+    } catch (e) {
+      showToast(`Unable to open runtime setup: ${e}`, 'error');
+    }
+  }
+
   async function saveRuntimeSetup() {
-    if (!setupDraft) return;
+    if (!setupDraft || anyProcessing) return;
     try {
       runtimeSnapshot = await invoke('save_runtime_config', { config: setupDraft });
       setupDraft = cloneConfig(runtimeSnapshot.config);
-      if (runtimeSnapshot.rifeReady && runtimeSnapshot.smoothieReady && runtimeSnapshot.mediaToolsReady) {
+      if (runtimeSnapshot.smoothieReady && runtimeSnapshot.mediaToolsReady) {
         showRuntimeSetup = false;
-        showToast('Local runtimes are configured', 'success');
+        showToast(runtimeSnapshot.rifeReady ? 'Local runtimes are configured' : 'Render runtime configured; RIFE remains optional', 'success');
       } else {
         showToast('Some required runtime components are still missing', 'error');
       }
@@ -1196,7 +1342,7 @@
   }
 
   async function installAppUpdate() {
-    if (!availableUpdate) return;
+    if (!availableUpdate || anyProcessing) return;
     try {
       updateState = 'downloading';
       updateDownloadedBytes = 0;
@@ -1234,6 +1380,11 @@
   onMount(() => {
     initializeRuntime();
     checkForAppUpdates(false);
+  });
+
+  onDestroy(() => {
+    suspendSourcePreviews();
+    if (logFlushTimer) clearTimeout(logFlushTimer);
   });
 </script>
 
@@ -1285,6 +1436,13 @@
     <button class:active={activePage === 'dashboard'} onclick={() => navigateTo('dashboard')}>INTERPOLATION</button>
     <button class:active={activePage === 'about'} onclick={() => navigateTo('about')}>ABOUT</button>
   </nav>
+
+  {#if activeJob && activePage !== activeJob.page}
+    <div class="active-job-notice" role="status">
+      <span>{activeJob.kind === 'rife' ? 'INTERPOLATION' : 'RENDER'} {isRenderPaused ? 'PAUSED' : 'IN PROGRESS'} · {progress}%</span>
+      <button class="btn-pro-secondary" onclick={() => navigateTo(activeJob.page)}>SHOW PROCESS</button>
+    </div>
+  {/if}
 
   {#if showRuntimeSetup}
     <main class="runtime-setup" aria-labelledby="setup-title">
@@ -1343,11 +1501,14 @@
               <div class="path-field"><input id="setup-smoothie-executable" bind:value={setupDraft.smoothie.executable} placeholder="Select smoothie-rs.exe" /><button onclick={() => browseRuntimePath('smoothie_executable')}>BROWSE</button></div>
               <label for="setup-smoothie-recipe">RECIPE <span>(optional)</span></label>
               <div class="path-field"><input id="setup-smoothie-recipe" bind:value={setupDraft.smoothie.recipe} placeholder="recipe.ini" /><button onclick={() => browseRuntimePath('smoothie_recipe')}>BROWSE</button></div>
+              <label for="setup-smoothie-lut">LUT <span>(optional)</span></label>
+              <div class="path-field"><input id="setup-smoothie-lut" bind:value={setupDraft.smoothie.lutFile} placeholder="Select a .cube LUT" /><button onclick={() => browseRuntimePath('smoothie_lut')}>BROWSE</button></div>
             </section>
           </div>
 
           <div class="setup-footer">
             <span>Configuration is saved to your cia render app-data folder.</span>
+            <button class="btn-pro-secondary" onclick={() => showRuntimeSetup = false}>CANCEL</button>
             <button class="btn-pro-primary" onclick={saveRuntimeSetup}>SAVE &amp; CONTINUE</button>
           </div>
         {/if}
@@ -1383,12 +1544,12 @@
             </div>
           {:else}
             <div class="environment-actions">
-              <button class="btn-primary" onclick={installRifeEnvironment}>INSTALL ENVIRONMENT</button>
+              <button class="btn-primary" onclick={installRifeEnvironment} disabled={anyProcessing}>INSTALL ENVIRONMENT</button>
             </div>
           {/if}
         </section>
       {:else if !videoPath}
-        <div class="drop-zone" class:dragging={isDragging} onclick={pickFile} onkeydown={(event) => activateOnKeyboard(event, pickFile)} role="button" tabindex="0">
+        <div class="drop-zone" class:dragging={isDragging} onclick={pickFile} onkeydown={(event) => activateOnKeyboard(event, pickFile)} role="button" aria-disabled={anyProcessing} tabindex={anyProcessing ? -1 : 0}>
           <div class="drop-center-content">
             <div class="drop-icon-box">
               <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
@@ -1465,10 +1626,10 @@
               <span class="completion-error">{jobError}</span>
             {/if}
             <button class="completion-preview" onclick={openFile} aria-label="Open rendered video">
-              {#if rifeOutputPreview || rifePreviewSet?.cover}
-                <img src={rifeOutputPreview || rifePreviewSet.cover} alt="Preview of the rendered video" />
+              {#if rifeOutputPreview}
+                <img src={rifeOutputPreview} alt="Preview extracted from the rendered video" />
               {:else}
-                <span class="completion-preview-loading">PREPARING PREVIEW</span>
+                <span class="completion-preview-loading">{rifeOutputPreviewStatus === 'unavailable' ? 'PREVIEW UNAVAILABLE' : 'PREPARING PREVIEW'}</span>
               {/if}
             </button>
             <span class="completion-output-name" title={lastOutputPath}>{lastOutputPath.split(/[\\/]/).pop()}</span>
@@ -1476,7 +1637,7 @@
             <div class="complete-actions-row">
               <button class="btn-pro-secondary completion-action" onclick={openFolder}>REVEAL IN EXPLORER</button>
               {#if canRenderSmoothie}
-                <button class="btn-pro-secondary completion-action" onclick={renderRifeWithSmoothie}>{jobPhase === 'failed' ? 'RETRY RENDER' : 'RENDER'}</button>
+                <button class="btn-pro-secondary completion-action" onclick={renderRifeWithSmoothie}>{jobError ? 'RETRY RENDER' : 'RENDER'}</button>
               {/if}
               <button class="btn-pro-secondary completion-action" onclick={resetInterpolation}>NEW RENDER</button>
             </div>
@@ -1529,7 +1690,7 @@
     <!-- RENDER PAGE (smoothie-rs engine) -->
     {:else if activePage === 'smoothie'}
       {#if !smoothiePath}
-        <div class="drop-zone" class:dragging={isDragging} onclick={pickSmoothieFile} onkeydown={(event) => activateOnKeyboard(event, pickSmoothieFile)} role="button" tabindex="0">
+        <div class="drop-zone" class:dragging={isDragging} onclick={pickSmoothieFile} onkeydown={(event) => activateOnKeyboard(event, pickSmoothieFile)} role="button" aria-disabled={anyProcessing} tabindex={anyProcessing ? -1 : 0}>
           <div class="drop-center-content">
             <div class="drop-icon-box">
               <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
@@ -1547,12 +1708,12 @@
           <div class="pro-render-card render-processing-card">
             <header class="render-processing-header">
               <h3 class="pro-filename" title={smoothiePath.split(/[\\/]/).pop()}>{smoothiePath.split(/[\\/]/).pop()}</h3>
-              <div class="fps-signature" aria-label={`Frame rate transformation: ${smoothieInfo.fps.toFixed(0)} frames per second to ${smoothieSettings.fps} frames per second`}>
+              <div class="fps-signature" aria-label={`Frame rate transformation: ${smoothieInfo.fps.toFixed(0)} frames per second to ${activeJob?.smoothieSettings.fps ?? smoothieSettings.fps} frames per second`}>
                 <span class="fps-value">{smoothieInfo.fps.toFixed(0)}</span>
                 <span class="fps-transition" class:paused={isRenderPaused} aria-hidden="true">
                   <span class="fps-dot"></span><span class="fps-dot"></span><span class="fps-dot"></span>
                 </span>
-                <span class="fps-value">{smoothieSettings.fps}</span>
+                <span class="fps-value">{activeJob?.smoothieSettings.fps ?? smoothieSettings.fps}</span>
                 <span class="fps-unit">FPS</span>
               </div>
             </header>
@@ -1561,10 +1722,10 @@
               <section
                 class="live-render-preview"
                 style={`aspect-ratio: ${smoothieAspectRatio};`}
-                aria-label="Low resolution render timeline preview"
+                aria-label="Source video preview while rendering"
               >
-                {#if liveRenderPreview || smoothiePreviewSet?.cover}
-                  <img src={liveRenderPreview || smoothiePreviewSet.cover} alt="Current blended source frame at the render timeline position" />
+                {#if smoothiePreviewSet?.cover}
+                  <img src={smoothiePreviewSet.cover} alt="Source frame; the final preview is extracted after rendering" />
                 {:else}
                   <span class="live-preview-loading" aria-label="Preparing live preview"></span>
                 {/if}
@@ -1616,10 +1777,10 @@
         {:else if isSmoothieComplete}
           <div class="pro-complete-card">
             <button class="completion-preview" onclick={openSmoothieFile} aria-label="Open rendered video">
-              {#if smoothieOutputPreview || liveRenderPreview || smoothiePreviewSet?.cover}
-                <img src={smoothieOutputPreview || liveRenderPreview || smoothiePreviewSet.cover} alt="Preview of the rendered video" />
+              {#if smoothieOutputPreview}
+                <img src={smoothieOutputPreview} alt="Preview extracted from the rendered video" />
               {:else}
-                <span class="completion-preview-loading">PREPARING PREVIEW</span>
+                <span class="completion-preview-loading">{smoothieOutputPreviewStatus === 'unavailable' ? 'PREVIEW UNAVAILABLE' : 'PREPARING PREVIEW'}</span>
               {/if}
             </button>
             <span class="completion-output-name" title={smoothieOutputPath}>{smoothieOutputPath.split(/[\\/]/).pop()}</span>
@@ -1636,6 +1797,7 @@
                 <header class="settings-panel-header">
                   <h3 class="settings-media-name" title={smoothiePath}>{smoothiePath.split(/[\\/]/).pop()}</h3>
                 </header>
+                {#if smoothieJobError}<p class="completion-error" role="alert">{smoothieJobError}</p>{/if}
                 <div class="source-preview" role="group" aria-label="Eight-frame source video preview" onmouseenter={() => startSourcePreviewCycle('smoothie')} onmouseleave={() => stopSourcePreviewCycle('smoothie')}>
                   {#if smoothiePreviewSet?.frames?.[smoothiePreviewFrameIndex]}
                     <img class="source-preview-cover" src={smoothiePreviewSet.frames[smoothiePreviewFrameIndex]} alt="Preview of selected source video" />
@@ -1711,6 +1873,7 @@
             </button>
           {/each}
         </div>
+        <button class="btn-pro-secondary" onclick={openRuntimeSetup} disabled={anyProcessing}>ADVANCED RUNTIME PATHS</button>
       </section>
     {/if}
       </div>
@@ -1756,7 +1919,7 @@
           <div class="settings-section">
             <h3>CORE CONFIGURATION</h3>
             <div class="setting-row settings-control">
-              <label for="mod-rife-mode" class="has-tooltip" data-tooltip="Slowmo extends video duration; Boost doubles FPS at normal speed.">MODE</label>
+              <label for="mod-rife-mode" class="has-tooltip" data-tooltip="Slowmo extends duration; Boost multiplies FPS at normal speed.">MODE</label>
               <select id="mod-rife-mode" bind:value={rifeSettings.mode}>
                 <option value="boost">FPS Boost (same duration)</option>
                 <option value="slowmo">Slowmo (duration x factor)</option>
@@ -1771,31 +1934,38 @@
           <div class="settings-section">
             <h3>ADVANCED PARAMETERS</h3>
             <div class="setting-row settings-control">
-              <label for="mod-rife-thresh" class="has-tooltip" data-tooltip="Threshold for detecting hard scene changes (0.01 - 0.50).">SCENE THRESHOLD</label>
-              <input id="mod-rife-thresh" type="number" step="0.01" min="0.01" max="0.5" bind:value={rifeSettings.sceneThreshold} />
+              <label for="mod-rife-precision">INFERENCE PRECISION</label>
+              <select id="mod-rife-precision" bind:value={rifeSettings.precision}>
+                <option value="fp32">FP32 · reference precision</option>
+                <option value="fp16">FP16 · faster CUDA inference</option>
+              </select>
             </div>
             <div class="setting-row settings-control">
-              <label for="mod-rife-blend" class="has-tooltip" data-tooltip="Crossfade frames at scene cuts (0 = hard cut).">BLEND CUTS</label>
-              <input id="mod-rife-blend" type="number" step="1" min="0" max="30" bind:value={rifeSettings.blendCuts} />
+              <label for="mod-rife-encoder">VIDEO ENCODER</label>
+              <select id="mod-rife-encoder" bind:value={rifeSettings.encoder}>
+                <option value="libx264">x264 · CPU</option>
+                <option value="h264_nvenc">NVENC · NVIDIA GPU</option>
+              </select>
             </div>
             <div class="setting-row settings-control">
-              <label for="mod-rife-crf" class="has-tooltip" data-tooltip="H.264 CRF quality factor (18 = visually lossless).">CRF QUALITY</label>
+              <label for="mod-rife-crf" class="has-tooltip" data-tooltip="Lower values improve quality and increase file size. CRF and NVENC CQ are different quality scales.">{rifeSettings.encoder === 'h264_nvenc' ? 'NVENC CQ QUALITY' : 'CRF QUALITY'}</label>
               <input id="mod-rife-crf" type="number" step="1" min="0" max="51" bind:value={rifeSettings.crf} />
             </div>
             <div class="setting-row settings-control">
-              <label for="mod-rife-preset" class="has-tooltip" data-tooltip="H.264 encoding preset speed vs compression ratio.">ENCODING PRESET</label>
-              <select id="mod-rife-preset" bind:value={rifeSettings.preset}>
+              <label for="mod-rife-preset" class="has-tooltip" data-tooltip="CPU encoding speed versus compression. NVENC uses its balanced p5 preset.">X264 PRESET</label>
+              <select id="mod-rife-preset" bind:value={rifeSettings.preset} disabled={rifeSettings.encoder === 'h264_nvenc'}>
                 <option value="ultrafast">ultrafast</option>
                 <option value="fast">fast</option>
                 <option value="medium">medium</option>
                 <option value="slow">slow</option>
               </select>
             </div>
+            <p class="settings-note">RIFE handles scene cuts with its built-in similarity check. FP16 and NVENC can change pixels and compression quality; FP32 and x264 remain the defaults.</p>
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" onclick={resetRifeSettings}>RESET DEFAULTS</button>
-          <button class="btn-primary-modal" onclick={() => { saveRifeSettings(); showRifeSettings = false; }}>SAVE SETTINGS</button>
+          <button class="btn-primary-modal" onclick={saveRifeSettings}>SAVE SETTINGS</button>
         </div>
       </div>
     </div>
@@ -1817,6 +1987,13 @@
         <div class="modal-body settings-body">
           <div class="settings-section">
             <h3>OUTPUT PARAMS</h3>
+            <div class="setting-row settings-control">
+              <label for="mod-sm-encoder">VIDEO ENCODER</label>
+              <select id="mod-sm-encoder" bind:value={smoothieSettings.encoder}>
+                <option value="libx264">x264 · CPU</option>
+                <option value="h264_nvenc">NVENC · NVIDIA GPU</option>
+              </select>
+            </div>
             <div class="setting-row settings-control">
               <label for="mod-sm-fps" class="has-tooltip" data-tooltip="Target frame blending output fps.">output fps</label>
               <input id="mod-sm-fps" type="number" min="10" max="60" bind:value={smoothieSettings.fps} />
@@ -1845,12 +2022,13 @@
           <div class="settings-section">
             <h3>LUT &amp; DISPLAY</h3>
             <div class="setting-row settings-control">
-              <label for="mod-sm-lutenable" class="has-tooltip" data-tooltip="Enable colorcia.cube LUT application.">LUT ENABLED</label>
-              <select id="mod-sm-lutenable" bind:value={smoothieSettings.lutEnabled}>
+              <label for="mod-sm-lutenable" class="has-tooltip" data-tooltip="Enable the .cube LUT configured in advanced runtime paths.">LUT ENABLED</label>
+              <select id="mod-sm-lutenable" bind:value={smoothieSettings.lutEnabled} disabled={!hasConfiguredLut}>
                 <option value="yes">yes</option>
                 <option value="no">no</option>
               </select>
             </div>
+            {#if !hasConfiguredLut}<p class="settings-note">Configure a .cube LUT under ABOUT → ADVANCED RUNTIME PATHS to enable it.</p>{/if}
             <div class="slider-row settings-slider">
               <div class="slider-header"><span class="slider-label">LUT OPACITY:</span><span class="slider-val">{(smoothieSettings.lutOpacity * 100).toFixed(0)}%</span></div>
               <input type="range" min="0.0" max="1.0" step="0.05" bind:value={smoothieSettings.lutOpacity} class="custom-slider" />
@@ -1866,7 +2044,7 @@
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" onclick={resetSmoothieSettings}>RESET DEFAULTS</button>
-          <button class="btn-primary-modal" onclick={() => { saveSmoothieSettings(); showSmoothieSettings = false; }}>SAVE CONFIG</button>
+          <button class="btn-primary-modal" onclick={saveSmoothieSettings}>SAVE CONFIG</button>
         </div>
       </div>
     </div>
@@ -1922,7 +2100,7 @@
             <span class="update-installing-status">Please wait while the update finishes...</span>
           {:else}
             <button class="btn-pro-secondary" onclick={() => showUpdateModal = false}>LATER</button>
-            <button class="btn-primary-modal" onclick={installAppUpdate}>UPDATE & RELAUNCH</button>
+            <button class="btn-primary-modal" onclick={installAppUpdate} disabled={anyProcessing}>UPDATE & RELAUNCH</button>
           {/if}
         </div>
       </div>
@@ -1938,6 +2116,26 @@
 </div>
 
 <style>
+  .active-job-notice {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid #27272a;
+    color: #d4d4d8;
+    font-size: 11px;
+  }
+
+  .settings-note {
+    margin-top: 10px;
+    color: #a1a1aa;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .drop-zone[aria-disabled='true'] { cursor: default; opacity: 0.45; }
+
   /* REFINED INDUSTRIAL DARK SLATE DESIGN SYSTEM */
   *, *::before, *::after {
     box-sizing: border-box;

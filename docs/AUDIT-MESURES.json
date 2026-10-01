@@ -1,0 +1,279 @@
+{
+  "date": "2026-09-30",
+  "source": "C:\\Users\\cia\\time-remap-app\\test_clip_topaz_source_2s.mp4",
+  "measurements": [
+    {
+      "name": "rife_fp32",
+      "seconds": [
+        14.298389800002042,
+        13.91402470000321
+      ],
+      "median_seconds": 14.106207250002626,
+      "outputs": [
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "mpeg4",
+              "width": 1680,
+              "height": 1050,
+              "r_frame_rate": "240/1",
+              "avg_frame_rate": "240/1",
+              "nb_read_frames": "95"
+            }
+          ],
+          "format": {
+            "duration": "0.395833"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "mpeg4",
+              "width": 1680,
+              "height": 1050,
+              "r_frame_rate": "240/1",
+              "avg_frame_rate": "240/1",
+              "nb_read_frames": "95"
+            }
+          ],
+          "format": {
+            "duration": "0.395833"
+          }
+        }
+      ]
+    },
+    {
+      "name": "rife_fp16",
+      "seconds": [
+        11.735514299994975,
+        11.26450759999716
+      ],
+      "median_seconds": 11.500010949996067,
+      "outputs": [
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "mpeg4",
+              "width": 1680,
+              "height": 1050,
+              "r_frame_rate": "240/1",
+              "avg_frame_rate": "240/1",
+              "nb_read_frames": "95"
+            }
+          ],
+          "format": {
+            "duration": "0.395833"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "mpeg4",
+              "width": 1680,
+              "height": 1050,
+              "r_frame_rate": "240/1",
+              "avg_frame_rate": "240/1",
+              "nb_read_frames": "95"
+            }
+          ],
+          "format": {
+            "duration": "0.395833"
+          }
+        }
+      ]
+    },
+    {
+      "name": "rife_fp16_scale_half",
+      "seconds": [
+        10.414885899997898,
+        10.33638670000073
+      ],
+      "median_seconds": 10.375636299999314,
+      "outputs": [
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "mpeg4",
+              "width": 1680,
+              "height": 1050,
+              "r_frame_rate": "240/1",
+              "avg_frame_rate": "240/1",
+              "nb_read_frames": "95"
+            }
+          ],
+          "format": {
+            "duration": "0.395833"
+          }
+        },
+        {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "mpeg4",
+              "width": 1680,
+              "height": 1050,
+              "r_frame_rate": "240/1",
+              "avg_frame_rate": "240/1",
+              "nb_read_frames": "95"
+            }
+          ],
+          "format": {
+            "duration": "0.395833"
+          }
+        }
+      ]
+    },
+    {
+      "name": "preview_16_processes",
+      "seconds": [
+        5.483947400003672,
+        5.645708999996714,
+        5.374966600000334
+      ],
+      "median_seconds": 5.483947400003672,
+      "caveat": "8-process variant excludes in-process luminance scoring; initial cover excluded"
+    },
+    {
+      "name": "preview_8_processes",
+      "seconds": [
+        2.6687488999959896,
+        2.6752081000013277,
+        2.5956663000033586
+      ],
+      "median_seconds": 2.6687488999959896,
+      "caveat": "8-process variant excludes in-process luminance scoring; initial cover excluded"
+    },
+    {
+      "name": "scene_detection",
+      "seconds": [
+        0.49722730000212323,
+        0.501873399996839,
+        0.5161083999992115
+      ],
+      "median_seconds": 0.501873399996839
+    },
+    {
+      "name": "x264_medium",
+      "seconds": [
+        5.02772699999332,
+        5.127220800000941,
+        4.9419010000056005
+      ],
+      "median_seconds": 5.02772699999332,
+      "sizes_bytes": [
+        11893427,
+        11893427,
+        11893427
+      ],
+      "caveat": "CRF and NVENC CQ are not equivalent quality settings; audio excluded"
+    },
+    {
+      "name": "x264_fast",
+      "seconds": [
+        4.268757199999527,
+        4.063773499998206,
+        4.1191193999984534
+      ],
+      "median_seconds": 4.1191193999984534,
+      "sizes_bytes": [
+        12185641,
+        12185641,
+        12185641
+      ],
+      "caveat": "CRF and NVENC CQ are not equivalent quality settings; audio excluded"
+    },
+    {
+      "name": "nvenc_p5",
+      "seconds": [
+        2.365503799999715,
+        1.1995396999991499,
+        1.197858699997596
+      ],
+      "median_seconds": 1.1995396999991499,
+      "sizes_bytes": [
+        22925380,
+        22925380,
+        22925380
+      ],
+      "caveat": "CRF and NVENC CQ are not equivalent quality settings; audio excluded"
+    },
+    {
+      "name": "smoothie_baseline",
+      "seconds": [
+        3.9334359999993467,
+        3.409575199999381
+      ],
+      "median_seconds": 3.6715055999993638,
+      "sizes_bytes": [
+        6912488,
+        6912488
+      ],
+      "caveat": "baseline recipe also scales dimensions; NVENC variant skips that scale; no quality equivalence"
+    },
+    {
+      "name": "smoothie_nvenc",
+      "seconds": [
+        1.7404316000029212,
+        2.000786299999163
+      ],
+      "median_seconds": 1.870608950001042,
+      "sizes_bytes": [
+        5063238,
+        5063238
+      ],
+      "caveat": "baseline recipe also scales dimensions; NVENC variant skips that scale; no quality equivalence"
+    }
+  ],
+  "source_info": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1680,
+        "height": 1050,
+        "r_frame_rate": "120/1",
+        "avg_frame_rate": "120/1",
+        "nb_read_frames": "242"
+      },
+      {
+        "codec_name": "aac",
+        "r_frame_rate": "0/0",
+        "avg_frame_rate": "0/0",
+        "nb_read_frames": "94"
+      }
+    ],
+    "format": {
+      "duration": "2.016667"
+    }
+  },
+  "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU, 4096 MiB, 610.62",
+  "rife_input_info": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1680,
+        "height": 1050,
+        "r_frame_rate": "120/1",
+        "avg_frame_rate": "120/1",
+        "nb_read_frames": "48"
+      }
+    ],
+    "format": {
+      "duration": "0.400000"
+    }
+  }
+}

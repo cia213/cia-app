@@ -7,6 +7,10 @@ on:
 jobs:
   windows-build:
     runs-on: windows-latest
+    env:
+      # Source-only checks compile with tracked resources. Release builds retain
+      # the complete resource list in tauri.conf.json.
+      TAURI_CONFIG: '{"bundle":{"resources":["resources/time_remap.py","resources/rife_worker.py","resources/bootstrap/bootstrap-rife.ps1"]}}'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -14,23 +18,15 @@ jobs:
           node-version: 20
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
-      - run: npm ci
-      - run: npm run build
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Ensure Signing Key
-        shell: pwsh
-        run: |
-          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-            $keyDir = "$env:USERPROFILE\.tauri"
-            if (!(Test-Path $keyDir)) { New-Item -ItemType Directory -Force -Path $keyDir | Out-Null }
-            npx tauri signer generate -w "$keyDir\ci.key" -f --ci
-            $keyContent = Get-Content "$keyDir\ci.key" -Raw
-            echo "TAURI_SIGNING_PRIVATE_KEY=$keyContent" >> $env:GITHUB_ENV
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> $env:GITHUB_ENV
-          }
-      - run: npm run tauri build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: cia-render-nsis
-          path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
+          python-version: '3.11'
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: python -m unittest discover -s tests -v
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      # Installer builds require a separately reviewed release payload and signing
+      # key. A source-only pull request must not manufacture either of them.

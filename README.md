@@ -61,6 +61,31 @@ The release build also needs the ignored release payload described in
 [runtime release notes](docs/RUNTIME-RELEASE-NOTES.md) before it can be
 redistributed.
 
+## Architecture, quality and performance
+
+The [project map](docs/CARTOGRAPHIE.md) describes the current rendering paths.
+The [quality and performance report](docs/PATCH-QUALITE-PERFORMANCES.md)
+records the audit, fixes, measurements and remaining limits.
+
+RIFE now streams interpolated RGB frames directly to FFmpeg. FP32 and software
+H.264 remain the defaults; FP16 and NVIDIA H.264 encoding are explicit options.
+The current delivery profile is SDR H.264. HDR sources require a separate
+tone-mapping workflow. Text subtitles are retained by the RIFE pipeline;
+bitmap subtitles are rejected before rendering.
+
+Source-only checks:
+
+```powershell
+npm test
+npm run build
+python -m unittest discover -s tests -v
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+```
+
+GPU and runtime integration checks are opt-in and documented in the report.
+
 ## Licence and notices
 
 cia render source code is MIT licensed. Third-party software keeps its own

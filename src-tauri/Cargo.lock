@@ -523,6 +523,7 @@ name = "cia-render"
 version = "1.2.3"
 dependencies = [
  "base64 0.22.1",
+ "png 0.17.16",
  "rfd",
  "serde",
  "serde_json",
