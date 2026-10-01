@@ -2183,8 +2183,12 @@ fn smoothie_overrides(
     encoder: &str,
     lut: Option<&Path>,
     sample_aspect_ratio: &str,
+    speed: f64,
 ) -> Result<Vec<String>, String> {
     validate_encoder(encoder)?;
+    if !speed.is_finite() || !(0.5..=2.0).contains(&speed) {
+        return Err("Smoothie speed must be from 0.5 to 2.0".to_string());
+    }
     if !(1..=480).contains(&output_fps) {
         return Err("Smoothie output framerate must be from 1 to 480".to_string());
     }
@@ -2251,7 +2255,7 @@ fn smoothie_overrides(
     ));
     result.push("frame blending;enabled;yes".to_string());
     result.push(format!("frame blending;fps;{output_fps}"));
-    // The application exposes source-duration rendering, not recipe time warps.
+    // Apply exact playback speed in FFmpeg: upstream timescale rounds the intermediate FPS.
     result.push("timescale;in;1.0".to_string());
     result.push("timescale;out;1.0".to_string());
     let video_args = if encoder == "h264_nvenc" {
@@ -2263,7 +2267,17 @@ fn smoothie_overrides(
     if positive_aspect_ratio(sample_aspect_ratio).is_none() {
         return Err("The source sample aspect ratio is invalid".to_string());
     }
-    result.push(format!("output;enc args;-vf setsar={sar} {video_args} -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000 -movflags +faststart"));
+    let speed_filters = if (speed - 1.0).abs() > f64::EPSILON {
+        format!(",setpts=PTS/{speed},fps={output_fps}")
+    } else {
+        String::new()
+    };
+    let audio_filter = if (speed - 1.0).abs() > f64::EPSILON {
+        format!(" -af atempo={speed}")
+    } else {
+        String::new()
+    };
+    result.push(format!("output;enc args;-vf setsar={sar}{speed_filters} {video_args}{audio_filter} -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000 -movflags +faststart"));
     Ok(result)
 }
 
@@ -2772,6 +2786,7 @@ async fn run_time_remap(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri exposes each named frontend parameter.
 async fn run_smoothie(
     app: tauri::AppHandle,
     registry: tauri::State<'_, JobRegistry>,
@@ -2780,6 +2795,7 @@ async fn run_smoothie(
     output_fps: u32,
     overrides: Vec<String>,
     encoder: Option<String>,
+    speed: Option<f64>,
 ) -> Result<String, String> {
     let job = JobGuard::reserve(&registry, &job_id)?;
     let config = load_config(&app)?;
@@ -2787,12 +2803,14 @@ async fn run_smoothie(
     let info = probe_video_impl(&video_path, &runtime.ffprobe, Some(&job)).await?;
     validate_delivery_source(&info)?;
     let encoder = encoder.unwrap_or_else(|| "libx264".to_string());
+    let speed = speed.unwrap_or(1.0);
     let mut overrides = smoothie_overrides(
         overrides,
         output_fps,
         &encoder,
         runtime.lut_file.as_deref(),
         &info.sample_aspect_ratio,
+        speed,
     )?;
     validate_smoothie_lut_source(&info, &overrides)?;
     preserve_smoothie_color_metadata(&mut overrides, &info);
@@ -2861,7 +2879,7 @@ async fn run_smoothie(
             &out_path,
             &runtime.ffprobe,
             &info,
-            info.duration,
+            info.duration / speed,
             f64::from(output_fps),
             None,
             &job,
@@ -3218,6 +3236,7 @@ mod tests {
             "h264_nvenc",
             Some(std::path::Path::new(r"C:\media\grade.cube")),
             "4:3",
+            1.0,
         )
         .unwrap();
         assert!(overrides
@@ -3239,7 +3258,8 @@ mod tests {
             30,
             "libx264",
             None,
-            "1:1"
+            "1:1",
+            1.0,
         )
         .is_err());
         assert!(super::smoothie_overrides(
@@ -3247,9 +3267,26 @@ mod tests {
             30,
             "libx264",
             None,
-            "1:1"
+            "1:1",
+            1.0,
         )
         .is_err());
+    }
+
+    #[test]
+    fn smoothie_speed_is_bounded_and_retimes_video_and_audio_once() {
+        for speed in [f64::NAN, f64::INFINITY, 0.0, 0.49, 2.01] {
+            assert!(super::smoothie_overrides(vec![], 25, "libx264", None, "1:1", speed).is_err());
+        }
+        let overrides =
+            super::smoothie_overrides(vec![], 25, "libx264", None, "1:1", 1.07).unwrap();
+        let args = overrides
+            .iter()
+            .find(|value| value.starts_with("output;enc args;"))
+            .unwrap();
+        assert!(args.contains("setpts=PTS/1.07,fps=25"));
+        assert!(args.contains("-af atempo=1.07"));
+        assert!(overrides.contains(&"timescale;out;1.0".to_string()));
     }
 
     #[test]
@@ -3337,6 +3374,7 @@ mod tests {
         let _cleanup = TestDirectory(directory.clone());
         let source = directory.join("source [v1].mp4");
         let untagged_source = directory.join("untagged.mp4");
+        let silent_source = directory.join("silent.mp4");
         let lut = directory.join("invert.cube");
         std::fs::write(&lut, "TITLE \"Invert red\"\nLUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n1 0 0\n0 0 0\n1 1 0\n0 1 0\n1 0 1\n0 0 1\n1 1 1\n0 1 1\n").unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -3344,10 +3382,12 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let generated = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x200:rate=30000/1001", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1.001", "-vf", "setsar=4/3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-n"]).arg(&untagged_source).output().await.unwrap();
+            let generated = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x200:rate=30000/1001", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4.004", "-vf", "setsar=4/3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-n"]).arg(&untagged_source).output().await.unwrap();
             assert!(generated.status.success(), "{}", String::from_utf8_lossy(&generated.stderr));
             let tagged = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-i"]).arg(&untagged_source).args(["-vf", "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", "-colorspace", "bt709", "-color_trc", "bt709", "-color_primaries", "bt709", "-n"]).arg(&source).output().await.unwrap();
             assert!(tagged.status.success(), "{}", String::from_utf8_lossy(&tagged.stderr));
+            let silent = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-i"]).arg(&source).args(["-c:v", "copy", "-an", "-n"]).arg(&silent_source).output().await.unwrap();
+            assert!(silent.status.success());
             let original = std::fs::read(&source).unwrap();
             let info = super::probe_video(&source.to_string_lossy(), &ffprobe).await.unwrap();
             assert_eq!((info.width, info.height), (320, 200));
@@ -3366,13 +3406,13 @@ mod tests {
             let preferred = directory.join("final.mp4");
             std::fs::write(&preferred, b"existing final must be kept").unwrap();
             let mut pixel_checksums = Vec::new();
-            for (case, input, brightness, lut_enabled) in [("neutral", &source, "1.0", false), ("grade", &source, "1.2", false), ("grade-lut", &source, "1.2", true), ("untagged-grade", &untagged_source, "1.2", false)] {
+            for (case, input, brightness, lut_enabled, speed) in [("neutral", &source, "1.0", false, 1.0), ("grade", &source, "1.2", false, 1.0), ("grade-lut", &source, "1.2", true, 1.0), ("untagged-grade", &untagged_source, "1.2", false, 1.0), ("speed-up", &source, "1.0", false, 1.07), ("speed-down", &source, "1.0", false, 0.8), ("speed-no-audio", &silent_source, "1.0", false, 1.07)] {
                 let source_info = super::probe_video(&input.to_string_lossy(), &ffprobe).await.unwrap();
                 let job = super::JobGuard::reserve(&registry, case).unwrap();
                 let mut reservation = super::reserve_output_path(&preferred).unwrap();
                 let work = reservation.prepare_work_directory().unwrap();
                 let output = work.join("output.mp4");
-                let mut overrides = super::smoothie_overrides(vec![format!("color grading;brightness;{brightness}"), "color grading;saturation;1.0".to_string(), "color grading;contrast;1.0".to_string(), format!("lut;enabled;{}", if lut_enabled { "yes" } else { "no" }), "lut;opacity;1.0".to_string(), "frame blending;intensity;1.0".to_string()], 30, "libx264", Some(&lut), &source_info.sample_aspect_ratio).unwrap();
+                let mut overrides = super::smoothie_overrides(vec![format!("color grading;brightness;{brightness}"), "color grading;saturation;1.0".to_string(), "color grading;contrast;1.0".to_string(), format!("lut;enabled;{}", if lut_enabled { "yes" } else { "no" }), "lut;opacity;1.0".to_string(), "frame blending;intensity;1.0".to_string()], 30, "libx264", Some(&lut), &source_info.sample_aspect_ratio, speed).unwrap();
                 super::validate_smoothie_lut_source(&source_info, &overrides).unwrap();
                 super::preserve_smoothie_color_metadata(&mut overrides, &source_info);
                 let inherited_path = std::env::var_os("PATH").unwrap_or_default();
@@ -3384,8 +3424,17 @@ mod tests {
                 let result = child.wait_with_output().await.unwrap();
                 assert!(result.status.success(), "{case}: stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
                 job.wait_for_descendants().await.unwrap();
-                super::validate_output(&output, &ffprobe, &source_info, source_info.duration, 30.0, Some(30), &job).await.unwrap_or_else(|error| panic!("{case}: {error}\nstdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)));
+                super::validate_output(&output, &ffprobe, &source_info, source_info.duration / speed, 30.0, if speed == 1.0 { Some(120) } else { None }, &job).await.unwrap_or_else(|error| panic!("{case}: {error}\nstdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)));
                 let output_info = super::probe_video_impl(&output.to_string_lossy(), &ffprobe, Some(&job)).await.unwrap();
+                let streams = super::Command::new(&ffprobe).args(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json"]).arg(&output).output().await.unwrap();
+                assert!(streams.status.success());
+                let streams: serde_json::Value = serde_json::from_slice(&streams.stdout).unwrap();
+                let audio = streams["streams"].as_array().unwrap().iter().find(|stream| stream["codec_type"] == "audio");
+                assert_eq!(audio.is_some(), source_info.has_audio);
+                if let Some(audio) = audio {
+                    let audio_duration = audio["duration"].as_str().unwrap().parse::<f64>().unwrap();
+                    assert!((audio_duration - source_info.duration / speed).abs() < 0.060, "{case}: audio was not correctly retimed: {audio_duration}");
+                }
                 assert_eq!(output_info.sample_aspect_ratio, "4:3");
                 if input == &source { assert_eq!(output_info.color_space.as_deref(), Some("bt709")); assert_eq!(output_info.color_transfer.as_deref(), Some("bt709")); assert_eq!(output_info.color_primaries.as_deref(), Some("bt709")); }
                 let hash = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-i"]).arg(&output).args(["-frames:v", "1", "-an", "-vf", "format=rgb24", "-f", "hash", "-hash", "sha256", "pipe:1"]).output().await.unwrap();
@@ -3405,7 +3454,7 @@ mod tests {
             assert!(super::validate_smoothie_lut_source(&untagged_info, &["lut;enabled;yes".to_string()]).unwrap_err().contains("BT.709"));
             assert_eq!(std::fs::read(&source).unwrap(), original);
             assert_eq!(std::fs::read(&preferred).unwrap(), b"existing final must be kept");
-            println!("Validated neutral, graded, graded+LUT and untagged graded renders: 320x200, SAR4:3, fractional source FPS, output30frames@30FPS, audio, BT709 tags, different decoded pixel checksums, eight PNG previews, source/preexisting destination preserved and cleanup");
+            println!("Validated neutral, graded, graded+LUT and untagged graded renders: 320x200, SAR4:3, fractional source FPS, output30FPS, synchronized audio at 1.0/1.07/0.8 playback speeds, BT709 tags, different decoded pixel checksums, eight PNG previews, source/preexisting destination preserved and cleanup");
         });
     }
 }

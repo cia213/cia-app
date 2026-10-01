@@ -179,6 +179,18 @@
   let outputFps = $derived(activeJob?.kind === 'rife' ? activeJob.outputFps : videoInfo ? (rifeSettings.mode === 'boost' ? videoInfo.fps * rifeSettings.factor : videoInfo.fps) : 0);
   let outputDuration = $derived(activeJob?.kind === 'rife' ? activeJob.outputDuration : videoInfo ? (rifeSettings.mode === 'slowmo' ? videoInfo.duration * rifeSettings.factor : videoInfo.duration) : 0);
 
+  // While rendering the interpolated file, describe that stage's actual input/output.
+  let interpolationRates = $derived(interpolationFrameRates());
+
+  function interpolationFrameRates() {
+    const source = jobPhase === 'smoothie' ? (rifeOutputInfo ?? activeJob?.info) : (activeJob?.info ?? videoInfo);
+    const input = Number(source?.fps ?? 0);
+    const output = jobPhase === 'smoothie'
+      ? Number(activeJob?.smoothieSettings.fps ?? smoothieSettings.fps)
+      : Number(activeJob?.outputFps ?? (rifeSettings.mode === 'boost' ? input * Number(rifeSettings.factor) : input));
+    return { input, output };
+  }
+
   // --- Smoothie State & Settings ---
   let smoothiePath = $state('');
   let isSmoothieLoading = $state(false);
@@ -309,6 +321,7 @@
   const DEFAULT_SMOOTHIE = {
     fps: 30,
     blendIntensity: 1.0,
+    speed: 1.07,
     brightness: 1.1,
     saturation: 1.1,
     contrast: 1.0,
@@ -594,6 +607,7 @@
     const rife = cloneConfig(rifeSettings);
     const smoothie = cloneConfig(smoothieSettings);
     smoothie.lutEnabled = smoothie.lutEnabled === 'yes' && hasConfiguredLut ? 'yes' : 'no';
+    const interpolationDuration = rife.mode === 'slowmo' ? info.duration * Number(rife.factor) : info.duration;
     return Object.freeze({
       id: createRenderJobId(), kind, path,
       page: kind === 'rife' ? 'dashboard' : 'smoothie',
@@ -602,7 +616,8 @@
       smoothieSettings: Object.freeze(smoothie),
       autoRender: Boolean(autoRender),
       outputFps: kind === 'rife' ? (rife.mode === 'boost' ? info.fps * Number(rife.factor) : info.fps) : Number(smoothie.fps),
-      outputDuration: kind === 'rife' && rife.mode === 'slowmo' ? info.duration * Number(rife.factor) : info.duration
+      outputDuration: kind === 'rife' ? interpolationDuration : info.duration / Number(smoothie.speed),
+      smoothieOutputDuration: (kind === 'rife' ? interpolationDuration : info.duration) / Number(smoothie.speed)
     });
   }
 
@@ -986,6 +1001,7 @@
 
       if (job.autoRender) {
         jobPhase = 'smoothie';
+        activeJob = Object.freeze({ ...job, outputDuration: job.smoothieOutputDuration });
         isRenderPaused = false;
         const smoothiePath = await runSmoothieFor(outputPath, { preserveLogs: true, jobId: job.id, settings: job.smoothieSettings });
         lastOutputPath = smoothiePath;
@@ -995,7 +1011,7 @@
       progress = 100;
       jobPhase = 'complete';
       isComplete = true;
-      void loadOutputPreview('rife', lastOutputPath, job.outputDuration);
+      void loadOutputPreview('rife', lastOutputPath, job.autoRender ? job.smoothieOutputDuration : job.outputDuration);
       playCompletionChime();
       showToast(job.autoRender ? 'Interpolation and render complete!' : 'Interpolation complete!', 'success');
     } catch (e) {
@@ -1159,6 +1175,7 @@
       jobId,
       videoPath: inputPath,
       outputFps: Number(settings.fps),
+      speed: Number(settings.speed),
       encoder: settings.encoder,
       overrides: smoothieOverrides(settings)
     });
@@ -1570,12 +1587,12 @@
             </header>
 
             <div class="pro-pipeline-box">
-              <div class="fps-signature" aria-label={`Frame rate transformation: ${videoInfo.fps.toFixed(0)} frames per second to ${outputFps.toFixed(0)} frames per second`}>
-                <span class="fps-value">{videoInfo.fps.toFixed(0)}</span>
+              <div class="fps-signature" aria-label={`Frame rate transformation: ${interpolationRates.input.toFixed(0)} frames per second to ${interpolationRates.output.toFixed(0)} frames per second`}>
+                <span class="fps-value">{interpolationRates.input.toFixed(0)}</span>
                 <span class="fps-transition" class:paused={isRenderPaused} aria-hidden="true">
                   <span class="fps-dot"></span><span class="fps-dot"></span><span class="fps-dot"></span>
                 </span>
-                <span class="fps-value">{outputFps.toFixed(0)}</span>
+                <span class="fps-value">{interpolationRates.output.toFixed(0)}</span>
                 <span class="fps-unit">FPS</span>
               </div>
             </div>
@@ -1997,6 +2014,10 @@
             <div class="setting-row settings-control">
               <label for="mod-sm-fps" class="has-tooltip" data-tooltip="Target frame blending output fps.">output fps</label>
               <input id="mod-sm-fps" type="number" min="10" max="60" bind:value={smoothieSettings.fps} />
+            </div>
+            <div class="setting-row settings-control">
+              <label for="mod-sm-speed" class="has-tooltip" data-tooltip="Playback speed for video and audio. 1.00 preserves duration; 1.07 plays 7% faster.">SPEED ×</label>
+              <input id="mod-sm-speed" type="number" min="0.5" max="2" step="0.01" bind:value={smoothieSettings.speed} />
             </div>
             <div class="slider-row settings-slider">
               <GlowSlider bind:value={smoothieSettings.blendIntensity} min={0} max={4} step={0.1} precision={1} label="blur intensity" />

@@ -12,7 +12,7 @@ const functions = parse(source).instance.content.body
   .map(node => source.slice(node.start, node.end)).join('\n');
 const media = { width: 1680, height: 1050, fps: 120, duration: 2 };
 const rife = { mode: 'boost', factor: 2, crf: 18, preset: 'medium', precision: 'fp32', encoder: 'libx264' };
-const smoothie = { fps: 30, blendIntensity: 1, brightness: 1.1, saturation: 1.1, contrast: 1, lutEnabled: 'no', lutOpacity: 0.67, borderless: 'no', encoder: 'libx264' };
+const smoothie = { fps: 30, speed: 1, blendIntensity: 1, brightness: 1.1, saturation: 1.1, contrast: 1, lutEnabled: 'no', lutOpacity: 0.67, borderless: 'no', encoder: 'libx264' };
 
 function deferred() {
   let resolve;
@@ -150,23 +150,32 @@ for (const [kind, loader, pathKey, infoKey, loadingKey, clear] of [
 test('RIFE auto-chain uses its launch snapshot after settings and page change', async () => {
   const rendering = deferred();
   const invocations = [];
+  let chainedRates;
+  let chainedDuration;
   const { ctx } = makeContext({
     videoPath: 'A.mp4', videoInfo: media, autoRender: true,
+    smoothieSettings: { ...smoothie, speed: 1.07 },
     invoke: (command, args) => {
       invocations.push({ command, args });
       if (command === 'run_time_remap') return rendering.promise;
-      if (command === 'run_smoothie') return Promise.resolve('A-final.mp4');
+      if (command === 'run_smoothie') {
+        chainedRates = ctx.interpolationFrameRates();
+        chainedDuration = ctx.activeJob.outputDuration;
+        return Promise.resolve('A-final.mp4');
+      }
       return Promise.resolve('preview');
     }
   });
   const pending = ctx.startProcessing();
   const job = ctx.activeJob;
+  assert.deepEqual({ ...ctx.interpolationFrameRates() }, { input: 120, output: 240 });
   assert.equal(Object.isFrozen(job), true);
   assert.equal(Object.isFrozen(job.smoothieSettings), true);
   ctx.autoRender = false;
   ctx.rifeSettings.factor = 8;
   ctx.rifeSettings.encoder = 'h264_nvenc';
   ctx.smoothieSettings.fps = 60;
+  ctx.smoothieSettings.speed = 2;
   ctx.smoothieSettings.brightness = 0;
   await ctx.applyHistoryEntry({ page: 'smoothie', videoPath: '', smoothiePath: '' });
   await ctx.startSmoothie();
@@ -179,7 +188,10 @@ test('RIFE auto-chain uses its launch snapshot after settings and page change', 
   assert.equal(remap.args.precision, 'fp32');
   assert.equal(Object.hasOwn(remap.args, 'sceneThreshold'), false);
   assert.equal(Object.hasOwn(remap.args, 'blendCuts'), false);
+  assert.deepEqual({ ...chainedRates }, { input: 240, output: 30 });
   assert.equal(final.args.outputFps, 30);
+  assert.equal(final.args.speed, 1.07);
+  assert.equal(chainedDuration, media.duration / 1.07);
   assert.equal(final.args.encoder, 'libx264');
   assert.equal(final.args.jobId, job.id);
   assert.ok(final.args.overrides.includes('color grading;brightness;1.1'));
@@ -221,16 +233,20 @@ test('LUT is enabled only with a configured path and neutral color settings disa
   assert.ok(ctx.smoothieOverrides(configured.smoothieSettings).includes('lut;enabled;yes'));
 });
 
-test('manual render keeps the verified RIFE duration after interpolation settings change', async () => {
+test('manual render displays verified interpolated FPS and keeps its duration after settings change', async () => {
   const running = deferred();
   const { ctx } = makeContext({
     videoInfo: media, rifeOutputPath: 'A-rife.mp4',
-    rifeOutputInfo: { ...media, fps: 120, duration: 8 },
+    rifeOutputInfo: { ...media, fps: 360, duration: 8 },
+    smoothieSettings: { ...smoothie, fps: 25 },
     rifeSettings: { ...rife, mode: 'boost', factor: 10 },
     invoke: command => command === 'run_smoothie' ? running.promise : Promise.resolve('preview')
   });
   const pending = ctx.renderRifeWithSmoothie();
   assert.equal(ctx.activeJob.outputDuration, 8);
+  assert.deepEqual({ ...ctx.interpolationFrameRates() }, { input: 360, output: 25 });
+  ctx.smoothieSettings.fps = 60;
+  assert.deepEqual({ ...ctx.interpolationFrameRates() }, { input: 360, output: 25 });
   running.resolve('A-final.mp4');
   await pending;
   assert.equal(ctx.lastOutputPath, 'A-final.mp4');
@@ -347,4 +363,25 @@ test('slider animation stops requesting frames once its targets are settled', ()
   assert.equal(ctx.vizRatio, 0.5);
   ctx.updateAnim(5000);
   assert.equal(pending.length, 0);
+});
+
+test('standalone render freezes playback speed and uses retimed duration for progress and preview', async () => {
+  const running = deferred();
+  const calls = [];
+  const { ctx } = makeContext({
+    smoothiePath: 'A.mp4', smoothieInfo: media,
+    smoothieSettings: { ...smoothie, speed: 0.8 },
+    invoke: (command, args) => {
+      calls.push({ command, args });
+      return command === 'run_smoothie' ? running.promise : Promise.resolve('preview');
+    }
+  });
+  const pending = ctx.startSmoothie();
+  assert.equal(ctx.activeJob.outputDuration, media.duration / 0.8);
+  ctx.smoothieSettings.speed = 1.5;
+  assert.equal(calls[0].args.speed, 0.8);
+  running.resolve('A-final.mp4');
+  await pending;
+  const preview = calls.find(call => call.command === 'generate_video_preview_frame');
+  assert.equal(preview.args.timestamp, media.duration / 0.8 * 0.12);
 });
