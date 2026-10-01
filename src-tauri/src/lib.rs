@@ -2273,7 +2273,8 @@ fn smoothie_overrides(
         String::new()
     };
     let audio_filter = if (speed - 1.0).abs() > f64::EPSILON {
-        format!(" -af atempo={speed}")
+        // Rubber Band can emit a shorter audio tail; pad only to the finite video end.
+        format!(" -af rubberband=tempo={speed}:pitch=1.0,apad -shortest")
     } else {
         String::new()
     };
@@ -3285,7 +3286,8 @@ mod tests {
             .find(|value| value.starts_with("output;enc args;"))
             .unwrap();
         assert!(args.contains("setpts=PTS/1.07,fps=25"));
-        assert!(args.contains("-af atempo=1.07"));
+        assert!(args.contains("-af rubberband=tempo=1.07:pitch=1.0,apad -shortest"));
+        assert!(!args.contains("atempo"));
         assert!(overrides.contains(&"timescale;out;1.0".to_string()));
     }
 
@@ -3434,6 +3436,16 @@ mod tests {
                 if let Some(audio) = audio {
                     let audio_duration = audio["duration"].as_str().unwrap().parse::<f64>().unwrap();
                     assert!((audio_duration - source_info.duration / speed).abs() < 0.060, "{case}: audio was not correctly retimed: {audio_duration}");
+                    if speed != 1.0 {
+                        // The fixture contains a 440 Hz tone. Retiming must preserve its pitch.
+                        let decoded = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-i"]).arg(&output).args(["-map", "0:a:0", "-ss", "0.25", "-t", "1", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"]).output().await.unwrap();
+                        assert!(decoded.status.success());
+                        let samples: Vec<f32> = decoded.stdout.chunks_exact(4).map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())).collect();
+                        assert!(samples.len() >= 47000);
+                        let crossings = samples.windows(2).filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0).count();
+                        let frequency = crossings as f64 * 48000.0 / (samples.len() - 1) as f64;
+                        assert!((frequency - 440.0).abs() < 4.0, "{case}: audio pitch changed: {frequency} Hz instead of 440 Hz");
+                    }
                 }
                 assert_eq!(output_info.sample_aspect_ratio, "4:3");
                 if input == &source { assert_eq!(output_info.color_space.as_deref(), Some("bt709")); assert_eq!(output_info.color_transfer.as_deref(), Some("bt709")); assert_eq!(output_info.color_primaries.as_deref(), Some("bt709")); }
