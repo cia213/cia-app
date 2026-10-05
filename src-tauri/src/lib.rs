@@ -2177,6 +2177,21 @@ fn positive_aspect_ratio(value: &str) -> Option<f64> {
     (rate.is_finite() && rate > 0.0).then_some(rate)
 }
 
+fn smoothie_output_frames(duration: f64, output_fps: u32, speed: f64) -> Result<u64, String> {
+    if !speed.is_finite() || !(0.5..=2.0).contains(&speed) {
+        return Err("Smoothie speed must be from 0.5 to 2.0".to_string());
+    }
+    if !(1..=480).contains(&output_fps) {
+        return Err("Smoothie output framerate must be from 1 to 480".to_string());
+    }
+    let frames = (duration / speed * f64::from(output_fps)).round().max(1.0);
+    if !duration.is_finite() || duration <= 0.0 || !frames.is_finite() || frames >= i64::MAX as f64
+    {
+        return Err("The Smoothie output duration is invalid".to_string());
+    }
+    Ok(frames as u64)
+}
+
 fn smoothie_overrides(
     overrides: Vec<String>,
     output_fps: u32,
@@ -2184,14 +2199,11 @@ fn smoothie_overrides(
     lut: Option<&Path>,
     sample_aspect_ratio: &str,
     speed: f64,
+    source_duration: f64,
 ) -> Result<Vec<String>, String> {
     validate_encoder(encoder)?;
-    if !speed.is_finite() || !(0.5..=2.0).contains(&speed) {
-        return Err("Smoothie speed must be from 0.5 to 2.0".to_string());
-    }
-    if !(1..=480).contains(&output_fps) {
-        return Err("Smoothie output framerate must be from 1 to 480".to_string());
-    }
+    let output_frames = smoothie_output_frames(source_duration, output_fps, speed)?;
+    let output_duration = output_frames as f64 / f64::from(output_fps);
     if overrides.len() > 24 {
         return Err("Too many Smoothie parameters".to_string());
     }
@@ -2268,17 +2280,22 @@ fn smoothie_overrides(
         return Err("The source sample aspect ratio is invalid".to_string());
     }
     let speed_filters = if (speed - 1.0).abs() > f64::EPSILON {
-        format!(",setpts=PTS/{speed},fps={output_fps}")
+        format!(",setpts=PTS/{speed}")
     } else {
         String::new()
     };
-    let audio_filter = if (speed - 1.0).abs() > f64::EPSILON {
-        // Rubber Band can emit a shorter audio tail; pad only to the finite video end.
-        format!(" -af rubberband=tempo={speed}:pitch=1.0,apad -shortest")
+    // Smoothie's CFR reader can end before a VFR capture's declared timeline.
+    // Clone only the last available frame, bounded by the planned output frame count.
+    let tail_filter =
+        format!(",fps={output_fps},tpad=stop_mode=clone:stop=-1,trim=end_frame={output_frames}");
+    let audio_speed = if (speed - 1.0).abs() > f64::EPSILON {
+        format!("rubberband=tempo={speed}:pitch=1.0,")
     } else {
         String::new()
     };
-    result.push(format!("output;enc args;-vf setsar={sar}{speed_filters} {video_args}{audio_filter} -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000 -movflags +faststart"));
+    // Audio is independently bounded; a short video must not cut off the original audio.
+    let audio_filter = format!(" -af {audio_speed}apad,atrim=duration={output_duration}");
+    result.push(format!("output;enc args;-vf setsar={sar}{speed_filters}{tail_filter} {video_args}{audio_filter} -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000 -movflags +faststart"));
     Ok(result)
 }
 
@@ -2812,6 +2829,7 @@ async fn run_smoothie(
         runtime.lut_file.as_deref(),
         &info.sample_aspect_ratio,
         speed,
+        info.duration,
     )?;
     validate_smoothie_lut_source(&info, &overrides)?;
     preserve_smoothie_color_metadata(&mut overrides, &info);
@@ -2882,7 +2900,7 @@ async fn run_smoothie(
             &info,
             info.duration / speed,
             f64::from(output_fps),
-            None,
+            Some(smoothie_output_frames(info.duration, output_fps, speed)?),
             &job,
         )
         .await?;
@@ -3238,6 +3256,7 @@ mod tests {
             Some(std::path::Path::new(r"C:\media\grade.cube")),
             "4:3",
             1.0,
+            4.0,
         )
         .unwrap();
         assert!(overrides
@@ -3261,6 +3280,7 @@ mod tests {
             None,
             "1:1",
             1.0,
+            4.0,
         )
         .is_err());
         assert!(super::smoothie_overrides(
@@ -3270,6 +3290,7 @@ mod tests {
             None,
             "1:1",
             1.0,
+            4.0,
         )
         .is_err());
     }
@@ -3277,18 +3298,100 @@ mod tests {
     #[test]
     fn smoothie_speed_is_bounded_and_retimes_video_and_audio_once() {
         for speed in [f64::NAN, f64::INFINITY, 0.0, 0.49, 2.01] {
-            assert!(super::smoothie_overrides(vec![], 25, "libx264", None, "1:1", speed).is_err());
+            assert!(
+                super::smoothie_overrides(vec![], 25, "libx264", None, "1:1", speed, 4.0).is_err()
+            );
         }
         let overrides =
-            super::smoothie_overrides(vec![], 25, "libx264", None, "1:1", 1.07).unwrap();
+            super::smoothie_overrides(vec![], 25, "libx264", None, "1:1", 1.07, 4.0).unwrap();
         let args = overrides
             .iter()
             .find(|value| value.starts_with("output;enc args;"))
             .unwrap();
         assert!(args.contains("setpts=PTS/1.07,fps=25"));
-        assert!(args.contains("-af rubberband=tempo=1.07:pitch=1.0,apad -shortest"));
+        assert!(args.contains("-af rubberband=tempo=1.07:pitch=1.0,apad,atrim=duration="));
+        assert!(!args.contains("-shortest"));
         assert!(!args.contains("atempo"));
         assert!(overrides.contains(&"timescale;out;1.0".to_string()));
+    }
+
+    #[test]
+    fn smoothie_timeline_is_finite_and_rounds_to_the_requested_cadence() {
+        assert_eq!(
+            super::smoothie_output_frames(64.8533, 25, 1.0).unwrap(),
+            1621
+        );
+        assert_eq!(super::smoothie_output_frames(1.4, 25, 1.0).unwrap(), 35);
+        for duration in [f64::NAN, f64::INFINITY, 0.0, -1.0, f64::MAX] {
+            assert!(super::smoothie_output_frames(duration, 25, 1.0).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the local bundled FFmpeg runtime"]
+    fn smoothie_encoder_clones_missing_tail_without_cutting_audio() {
+        let root = std::env::var_os("CIA_TEST_RUNTIME_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime")
+            });
+        let ffmpeg = root.join("ffmpeg/ffmpeg.exe");
+        let ffprobe = root.join("ffmpeg/ffprobe.exe");
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!(
+                "tail-integration-{}-{}",
+                std::process::id(),
+                super::TEMPORARY_ID.fetch_add(1, super::Ordering::Relaxed)
+            ));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let input = directory.join("short-video.mp4");
+            let result = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=25:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1.4", "-c:v", "libx264", "-crf", "0", "-c:a", "aac", "-n"]).arg(&input).output().await.unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            let original = std::fs::read(&input).unwrap();
+            let registry = super::JobRegistry::default();
+            for has_audio in [true, false] {
+                let job = super::JobGuard::reserve(&registry, if has_audio { "tail-audio" } else { "tail-silent" }).unwrap();
+                let source = super::probe_video(&input.to_string_lossy(), &ffprobe).await.unwrap();
+                let overrides = super::smoothie_overrides(vec![], 25, "libx264", None, &source.sample_aspect_ratio, 1.0, 1.4).unwrap();
+                let args = overrides.iter().find_map(|value| value.strip_prefix("output;enc args;")).unwrap().replace("-crf 18", "-crf 0");
+                let output = directory.join(if has_audio { "padded-audio.mp4" } else { "padded-silent.mp4" });
+                let mut command = super::Command::new(&ffmpeg);
+                command.args(["-hide_banner", "-v", "error", "-i"]).arg(&input).args(args.split_ascii_whitespace());
+                if !has_audio { command.arg("-an"); }
+                let result = command.arg("-n").arg(&output).output().await.unwrap();
+                assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+                let mut contract = source.clone();
+                contract.has_audio = has_audio;
+                super::validate_output(&output, &ffprobe, &contract, 1.4, 25.0, Some(35), &job).await.unwrap();
+                let decoded = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-i"]).arg(&output).args(["-map", "0:v:0", "-f", "framemd5", "pipe:1"]).output().await.unwrap();
+                assert!(decoded.status.success());
+                let text = String::from_utf8(decoded.stdout).unwrap();
+                let hashes: Vec<&str> = text.lines().filter(|line| !line.starts_with('#') && !line.is_empty()).map(|line| line.rsplit(',').next().unwrap().trim()).collect();
+                assert_eq!(hashes.len(), 35);
+                assert!(hashes[24..].iter().all(|hash| *hash == hashes[24]), "Missing tail must clone the last real image, not create black frames");
+                if has_audio {
+                    let probed = super::Command::new(&ffprobe).args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "json"]).arg(&output).output().await.unwrap();
+                    let json: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
+                    let duration = json["streams"][0]["duration"].as_str().unwrap().parse::<f64>().unwrap();
+                    assert!((duration - 1.4).abs() < 0.030, "Audio was cut by the short video: {duration}");
+                }
+            }
+            assert_eq!(std::fs::read(&input).unwrap(), original);
+            println!("Verified 10 cloned final frames, 35 frames at 25 FPS, full audio duration, silent input and untouched source");
+        });
     }
 
     #[test]
@@ -3414,7 +3517,7 @@ mod tests {
                 let mut reservation = super::reserve_output_path(&preferred).unwrap();
                 let work = reservation.prepare_work_directory().unwrap();
                 let output = work.join("output.mp4");
-                let mut overrides = super::smoothie_overrides(vec![format!("color grading;brightness;{brightness}"), "color grading;saturation;1.0".to_string(), "color grading;contrast;1.0".to_string(), format!("lut;enabled;{}", if lut_enabled { "yes" } else { "no" }), "lut;opacity;1.0".to_string(), "frame blending;intensity;1.0".to_string()], 30, "libx264", Some(&lut), &source_info.sample_aspect_ratio, speed).unwrap();
+                let mut overrides = super::smoothie_overrides(vec![format!("color grading;brightness;{brightness}"), "color grading;saturation;1.0".to_string(), "color grading;contrast;1.0".to_string(), format!("lut;enabled;{}", if lut_enabled { "yes" } else { "no" }), "lut;opacity;1.0".to_string(), "frame blending;intensity;1.0".to_string()], 30, "libx264", Some(&lut), &source_info.sample_aspect_ratio, speed, source_info.duration).unwrap();
                 super::validate_smoothie_lut_source(&source_info, &overrides).unwrap();
                 super::preserve_smoothie_color_metadata(&mut overrides, &source_info);
                 let inherited_path = std::env::var_os("PATH").unwrap_or_default();
@@ -3426,7 +3529,7 @@ mod tests {
                 let result = child.wait_with_output().await.unwrap();
                 assert!(result.status.success(), "{case}: stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
                 job.wait_for_descendants().await.unwrap();
-                super::validate_output(&output, &ffprobe, &source_info, source_info.duration / speed, 30.0, if speed == 1.0 { Some(120) } else { None }, &job).await.unwrap_or_else(|error| panic!("{case}: {error}\nstdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)));
+                super::validate_output(&output, &ffprobe, &source_info, source_info.duration / speed, 30.0, Some(super::smoothie_output_frames(source_info.duration, 30, speed).unwrap()), &job).await.unwrap_or_else(|error| panic!("{case}: {error}\nstdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)));
                 let output_info = super::probe_video_impl(&output.to_string_lossy(), &ffprobe, Some(&job)).await.unwrap();
                 let streams = super::Command::new(&ffprobe).args(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json"]).arg(&output).output().await.unwrap();
                 assert!(streams.status.success());
