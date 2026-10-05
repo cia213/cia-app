@@ -3543,7 +3543,7 @@ mod tests {
                         // The fixture contains a 440 Hz tone. Retiming must preserve its pitch.
                         let decoded = super::Command::new(&ffmpeg).args(["-hide_banner", "-v", "error", "-i"]).arg(&output).args(["-map", "0:a:0", "-ss", "0.25", "-t", "1", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"]).output().await.unwrap();
                         assert!(decoded.status.success());
-                        let samples: Vec<f32> = decoded.stdout.chunks_exact(4).map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())).collect();
+                        let samples: Vec<f32> = decoded.stdout.as_chunks::<4>().0.iter().map(|bytes| f32::from_le_bytes(*bytes)).collect();
                         assert!(samples.len() >= 47000);
                         let crossings = samples.windows(2).filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0).count();
                         let frequency = crossings as f64 * 48000.0 / (samples.len() - 1) as f64;
