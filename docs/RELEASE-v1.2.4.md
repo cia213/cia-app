@@ -1,16 +1,24 @@
 # cia render v1.2.4
 
-Cette version corrige le suivi des traitements et remplace l'intermédiaire RIFE par un flux direct vers FFmpeg.
+This version fixes job tracking and replaces the intermediate RIFE video with a
+direct stream to FFmpeg.
 
-- Un seul traitement actif, paramètres conservés pendant la navigation, arrêt des descendants à l'annulation et à la fermeture.
-- Sorties publiées sans écrasement ; contrôle de durée, cadence, dimensions, ratio et audio avant succès.
-- RIFE : modèle sélectionné réellement chargé, FPS fractionnaires/VFR, rotation, sous-titres texte et audio en boost/slowmo.
-- Smoothie : ratio conservé, recette sélectionnée et réglages couleur/LUT effectivement appliqués. LUT limitée aux sources SDR BT709 renseignées.
-- Aperçu final tiré du résultat, aperçus supplémentaires au survol, cache borné et animations de curseurs arrêtées au repos.
-- Options FP16 et NVENC explicites ; FP32/x264 restent les valeurs par défaut.
+- One active job, settings retained while navigating, and descendant processes stopped on cancellation and shutdown.
+- Outputs published without overwriting existing files; duration, cadence, dimensions, aspect ratio, and audio checked before reporting success.
+- RIFE: the selected model is actually loaded; fractional/VFR FPS, rotation, text subtitles, and audio in boost/slowmo are handled.
+- Smoothie: aspect ratio preserved, selected recipe used, and colour/LUT settings applied. LUT is limited to SDR sources explicitly tagged BT709.
+- Final preview decoded from the result; extra previews loaded on hover; bounded cache and slider animations stopped while idle.
+- FP16 and NVENC are explicit options; FP32/x264 remain the defaults.
 
-Les essais locaux RIFE montrent **6–22 % de temps en moins en FP32/x264** et environ **36 % en FP16/NVENC**, sur des extraits de 48 et 120 images. Ces mesures incluent le chargement du modèle ; les profils accélérés ne produisent pas des images ou une compression identiques. [Méthode et mesures](https://github.com/cia213/cia-app/blob/main/docs/PATCH-QUALITE-PERFORMANCES.md).
+Local RIFE tests show **6–22% less elapsed time with FP32/x264** and around
+**36% with FP16/NVENC** on 48- and 120-frame clips. These measurements include
+model loading; accelerated profiles do not produce identical images or
+compression. [Method and measurements](https://github.com/cia213/cia-app/blob/main/docs/PATCH-QUALITE-PERFORMANCES.md).
 
-Profil actuel : SDR H.264 8 bits ; HDR et sous-titres bitmap refusés pour éviter une conversion implicite incorrecte. Les styles ASS avancés ne sont pas conservés lors de la conversion en sous-titres MP4.
+Current profile: SDR 8-bit H.264. HDR and bitmap subtitles are rejected to avoid
+an incorrect implicit conversion. Advanced ASS styles are not retained when
+converting to MP4 subtitles.
 
-Le paquet Windows contient Smoothie et les outils média. RIFE reste une installation facultative nécessitant un GPU NVIDIA CUDA. L'installateur et le manifeste de mise à jour utilisent la clé publique déjà configurée dans les versions précédentes.
+The Windows package includes Smoothie and media tools. RIFE remains an optional
+installation requiring an NVIDIA CUDA GPU. The installer and update manifest
+use the public key already configured in previous versions.

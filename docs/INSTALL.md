@@ -11,7 +11,22 @@ environment into cia render's per-user app-data folder. This is a large
 download, requires a CUDA-capable NVIDIA GPU, and is never downloaded by the
 installer or by merely launching the app.
 
-The runtime repair panel is an advanced settings tool. It can point cia render
+The fixed bootstrap extracts Python 3.11.9 x64 from the official NuGet package
+after verifying its SHA-256. Its private executable and virtual environment do
+not depend on a Python installation registered on the machine. Other Python
+installations, registry entries, file associations, and the user `PATH` are not
+changed. An incomplete private installation is replaced only after the new copy
+has been verified. The package's PSF licence is retained.
+
+The published v1.2.5 installer still uses the previous official Python Windows
+installer, which can fail to create the private directory when Python is already
+installed. See the [RIFE installation fix](CORRECTION-INSTALLATION-RIFE.md).
+
+When installation fails, the full diagnostic stays visible on the interpolation
+page. **COPY LOG** provides the details needed to identify the failed stage and
+retry installation.
+
+The **ABOUT → ADVANCED RUNTIME PATHS** repair panel is an advanced settings tool. It can point cia render
 to an existing RIFE installation if the optional installer is not the
 right fit. It is not part of the normal first-run flow.
 

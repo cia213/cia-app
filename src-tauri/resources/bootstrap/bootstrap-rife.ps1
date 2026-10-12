@@ -1,20 +1,29 @@
-param(
-  [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-  [Parameter(Mandatory = $true)][string]$PythonInstaller
+﻿param(
+  [Parameter(Mandatory = $true)][string]$RuntimeRoot
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
+$env:PYTHONUTF8 = '1'
+$env:PYTHONNOUSERSITE = '1'
+Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+try {
+. (Join-Path $PSScriptRoot 'bootstrap-python.ps1')
 
 # --- Fail fast: require an NVIDIA GPU before any download ---
 Write-Output 'CIA_PROGRESS step=1 total=7 label=Checking NVIDIA GPU'
 $NvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if (-not $NvidiaSmi) {
-  throw 'ERROR: nvidia-smi not found. RIFE requires an NVIDIA GPU with CUDA support. Install aborted before any download.'
+  throw 'ERROR: nvidia-smi not found. RIFE requires an NVIDIA GPU with CUDA support. Installation aborted before any download.'
 }
 $GpuCheck = & nvidia-smi --query-gpu=name --format=csv,noheader 2>&1
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($GpuCheck)) {
-  throw "ERROR: No NVIDIA GPU detected (nvidia-smi returned: $GpuCheck). RIFE requires CUDA. Install aborted before any download."
+  throw "ERROR: No NVIDIA GPU detected (nvidia-smi returned: $GpuCheck). RIFE requires CUDA. Installation aborted before any download."
 }
 Write-Output "cia render SETUP: NVIDIA GPU detected: $($GpuCheck.Trim())"
 
@@ -40,24 +49,20 @@ function Assert-ExitCode([string]$Step) {
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $Staging | Out-Null
 
-if (-not (Test-Path -LiteralPath $PythonInstaller -PathType Leaf)) {
-  throw "The bundled Python installer is missing: $PythonInstaller"
-}
-
-Write-Output 'CIA_PROGRESS step=2 total=7 label=Installing Python 3.11'
-$BasePython = Join-Path $PythonHome 'python.exe'
-if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) {
-  Write-Step 'Installing the bundled Python 3.11 runtime...'
-  & $PythonInstaller /quiet InstallAllUsers=0 "TargetDir=$PythonHome" Include_pip=1 Include_test=0 Include_tcltk=0 Include_launcher=0 PrependPath=0
-  Assert-ExitCode 'Python installation'
-}
-if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) {
-  throw "Python installation completed without creating $BasePython"
-}
+Write-Output 'CIA_PROGRESS step=2 total=7 label=Preparing Python 3.11'
+$BasePython = Initialize-RifePython -RuntimeRoot $RuntimeRoot
 
 Write-Output 'CIA_PROGRESS step=3 total=7 label=Creating virtual environment'
 $VenvPython = Join-Path $VenvRoot 'Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
+$VenvReady = $false
+if (Test-Path -LiteralPath $VenvPython -PathType Leaf) {
+  try {
+    & $VenvPython -I -c "import sys,struct,pip; assert sys.version_info[:2] == (3,11); assert struct.calcsize('P') == 8" 2>$null
+    $VenvReady = $LASTEXITCODE -eq 0
+  } catch { $VenvReady = $false }
+}
+if (-not $VenvReady) {
+  Remove-RifeDirectory $VenvRoot $RuntimeRoot
   Write-Step 'Creating the isolated RIFE environment...'
   & $BasePython -m venv $VenvRoot
   Assert-ExitCode 'Virtual environment creation'
@@ -91,7 +96,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'inference_video.py') -
     throw 'The Practical-RIFE source archive did not contain inference_video.py.'
   }
   if (Test-Path -LiteralPath $ProjectRoot) {
-    Remove-Item -LiteralPath $ProjectRoot -Recurse -Force
+    Remove-RifeDirectory $ProjectRoot $RuntimeRoot
   }
   Move-Item -LiteralPath $ProjectSource.FullName -Destination $ProjectRoot
 }
@@ -112,7 +117,7 @@ if (-not (Test-Path -LiteralPath $ModelTarget -PathType Leaf)) {
   if ($Header[0] -eq 80 -and $Header[1] -eq 75) {
     $ModelExtract = Join-Path $Staging 'model'
     if (Test-Path -LiteralPath $ModelExtract) {
-      Remove-Item -LiteralPath $ModelExtract -Recurse -Force
+      Remove-RifeDirectory $ModelExtract $RuntimeRoot
     }
     Expand-Archive -LiteralPath $ModelZip -DestinationPath $ModelExtract -Force
     $ModelSource = Get-ChildItem -LiteralPath $ModelExtract -Recurse -Filter 'flownet.pkl' -File |
@@ -138,5 +143,13 @@ Write-Step 'Checking CUDA availability...'
 & $VenvPython -c "import torch; assert torch.cuda.is_available(), 'CUDA-capable NVIDIA GPU not available'; print(torch.__version__); print(torch.cuda.get_device_name(0))"
 Assert-ExitCode 'CUDA verification'
 
-Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
+Remove-RifeDirectory $Staging $RuntimeRoot
 Write-Output "CIA_RENDER_RIFE_READY|$VenvPython|$ProjectRoot|$ModelTarget"
+
+} catch {
+  # One explicit error line prevents a truncated path from being reported
+  # instead of the cause by PowerShell's multiline error formatting.
+  $Message = $_.Exception.Message -replace '[\r\n]+', ' '
+  [Console]::Error.WriteLine("CIA_INSTALL_ERROR $Message")
+  exit 1
+}

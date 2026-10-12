@@ -34,6 +34,7 @@
   let setupDraft = $state(null);
   let showRuntimeSetup = $state(false);
   let isInstallingRifeEnvironment = $state(false);
+  let rifeInstallError = $state('');
   let installStep = $state(0);
   let installTotal = $state(0);
   let installLabel = $state('');
@@ -1248,13 +1249,15 @@
     installTotal = 0;
     installLabel = '';
     beginLogCapture();
+    rifeInstallError = '';
     appendLog('[cia render] Checking for an available RIFE environment');
     try {
       runtimeSnapshot = await invoke('install_rife_environment');
       setupDraft = cloneConfig(runtimeSnapshot.config);
       showToast('RIFE environment ready', 'success');
     } catch (e) {
-      showToast(`RIFE environment installation failed: ${e}`, 'error');
+      rifeInstallError = String(e);
+      showToast(rifeInstallError, 'error');
     } finally {
       isInstallingRifeEnvironment = false;
       installStep = 0;
@@ -1417,7 +1420,7 @@
           onclick={handleGoBack}
           disabled={!canGoBack}
           aria-label="Previous page"
-          title="Précédent"
+          title="Previous"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M19 12H5M12 19l-7-7 7-7" />
@@ -1428,7 +1431,7 @@
           onclick={handleGoForward}
           disabled={!canGoForward}
           aria-label="Next page"
-          title="Suivant"
+          title="Next"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M5 12h14M12 5l7 7-7 7" />
@@ -1563,6 +1566,10 @@
             <div class="environment-actions">
               <button class="btn-primary" onclick={installRifeEnvironment} disabled={anyProcessing}>INSTALL ENVIRONMENT</button>
             </div>
+          {/if}
+          {#if rifeInstallError}
+            <div class="setup-alert" role="alert">{rifeInstallError}</div>
+            <button class="btn-pro-secondary" onclick={copyLogsToClipboard}>COPY LOGS</button>
           {/if}
         </section>
       {:else if !videoPath}
@@ -2377,6 +2384,8 @@
   }
 
   .setup-alert {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
     background: #000000;
     border-color: #ffffff;
     color: #ffffff;
@@ -4011,6 +4020,10 @@
 
   /* Toast Overlay */
   .toast {
+    max-width: calc(100vw - 28px);
+    box-sizing: border-box;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
     position: fixed;
     bottom: 14px;
     right: 14px;

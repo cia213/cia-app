@@ -2513,9 +2513,9 @@ async fn install_rife_environment(
     let bootstrap = bundled_resource(&app, "bootstrap/bootstrap-rife.ps1")
         .filter(|path| path.is_file())
         .ok_or("The bundled RIFE installer script is missing. Reinstall cia render.")?;
-    let python_installer = bundled_resource(&app, "bootstrap/python-3.11.9-amd64.exe")
+    bundled_resource(&app, "bootstrap/bootstrap-python.ps1")
         .filter(|path| path.is_file())
-        .ok_or("The bundled Python installer is missing. Reinstall cia render.")?;
+        .ok_or("The bundled Python bootstrap script is missing. Reinstall cia render.")?;
     let root = rife_install_root(&app)?;
     fs::create_dir_all(&root)
         .map_err(|error| format!("Unable to create {}: {error}", root.display()))?;
@@ -2526,8 +2526,6 @@ async fn install_rife_environment(
         .arg(&bootstrap)
         .arg("-RuntimeRoot")
         .arg(&root)
-        .arg("-PythonInstaller")
-        .arg(&python_installer)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
@@ -2557,20 +2555,7 @@ async fn install_rife_environment(
     let stderr_lines = error_task.await.unwrap_or_default();
     job.check_cancelled()?;
     if !status.success() {
-        let detail = stderr_lines
-            .iter()
-            .rev()
-            .find(|line| line.contains("ERROR:"))
-            .or_else(|| stderr_lines.last())
-            .cloned()
-            .unwrap_or_default();
-        return if detail.is_empty() {
-            Err(format!(
-                "RIFE environment installation failed ({status}). Review logs for the exact step."
-            ))
-        } else {
-            Err(format!("RIFE environment installation failed: {detail}"))
-        };
+        return Err(rife_install_failure(&stderr_lines, &status.to_string()));
     }
 
     let installed_rife = RifeConfig {
@@ -2590,6 +2575,26 @@ async fn install_rife_environment(
         config.rife = installed_rife;
     })?;
     Ok(runtime_snapshot(&app))
+}
+
+fn rife_install_failure(stderr_lines: &[String], status: &str) -> String {
+    let detail = stderr_lines
+        .iter()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("CIA_INSTALL_ERROR "))
+        .or_else(|| {
+            stderr_lines
+                .iter()
+                .find_map(|line| line.trim().strip_prefix("ERROR:"))
+        })
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty());
+    match detail {
+        Some(detail) => format!("RIFE environment installation failed: {detail}"),
+        None => format!(
+            "RIFE environment installation failed ({status}). Review logs for the exact step."
+        ),
+    }
 }
 
 #[tauri::command]
@@ -3039,6 +3044,26 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rife_install_errors_keep_the_complete_message_and_ignore_powershell_wrapping() {
+        let diagnostic = "Python package missing at C:/a long path/python/python.exe";
+        let lines = vec![
+            "PowerShell formatting line".to_string(),
+            format!("CIA_INSTALL_ERROR {diagnostic}"),
+            "CategoryInfo: OperationStopped".to_string(),
+            "python/python.exe".to_string(),
+        ];
+        assert_eq!(
+            super::rife_install_failure(&lines, "1"),
+            format!("RIFE environment installation failed: {diagnostic}")
+        );
+        assert!(super::rife_install_failure(&[], "1").contains("Review logs"));
+        assert_eq!(
+            super::rife_install_failure(&["ERROR: NVIDIA GPU missing".to_string()], "1"),
+            "RIFE environment installation failed: NVIDIA GPU missing"
+        );
+    }
+
     use super::{
         preview_luminance_score, preview_timestamps, reserve_output_path, rife_output_path,
         smoothie_output_path, PREVIEW_FRAME_COUNT,

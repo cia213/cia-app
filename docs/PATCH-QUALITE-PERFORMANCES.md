@@ -1,58 +1,92 @@
-# Bilan du patch qualité et performances
+# Quality and performance patch report
 
-**Bilan final : 1er octobre 2026.** Le patch corrige les risques prioritaires identifiés sur la révision `241f350` et remplace le parcours RIFE avec intermédiaire vidéo par un flux RGB direct vers l'encodeur final. L'audit initial reste consultable dans [AUDIT-QUALITE-PERFORMANCES.md](AUDIT-QUALITE-PERFORMANCES.md) ; la [cartographie](CARTOGRAPHIE.md) décrit le code corrigé.
+**Final report: October 1, 2026.** The patch fixes the priority risks identified
+on revision `241f350` and replaces the RIFE path's intermediate video with a
+direct RGB stream to the final encoder. The initial audit remains available in
+[AUDIT-QUALITE-PERFORMANCES.md](AUDIT-QUALITE-PERFORMANCES.md); the
+[project map](CARTOGRAPHIE.md) describes the patched code.
 
-## Corrections et preuves
+## Fixes and evidence
 
-| Audit | Changement livré | Validation |
+| Audit | Delivered change | Validation |
 | --- | --- | --- |
-| Q1 — historique et calcul simultané | Snapshot immuable du job, navigation indépendante, réservation globale backend avant préparation | Tests des handlers de production et du registre Rust |
-| Q2 — écrasement d'intermédiaire | Suppression du MP4 intermédiaire et du glob ; temporaires possédés, publication sans écrasement | Tests no-clobber et de publication tardive ; fixtures avec noms entre crochets |
-| Q3 — processus orphelins | Windows Job Object avec kill-on-close, spawn suspendu puis affectation, gardes de nettoyage, annulation pendant préparation | Test réel de terminaison d'un descendant suspendu et tests de réservation/annulation |
-| Q4 — ratio Smoothie | Dimensions conservées, SAR transmis ; overrides d'encodage sans arrondi largeur/hauteur indépendant | Fixture réelle Smoothie avec SAR 4:3 |
-| Q5 — réglages sans effet | Recette et modèle sélectionnés transmis, LUT configurée, activation du traitement couleur non neutre ; retrait des contrôles scène/blend non appliqués | Contrats Rust, modèle effectivement utilisé, fixture Smoothie couleur/LUT |
-| Q6 — cadence et validation | FPS rationnels, cadence moyenne VFR, limites de paramètres, rotation et SAR ; contrat SDR explicite | Fixtures FPS fractionnaires, facteur3, VFR, rotation90 et SAR4:3 |
-| Q7 — faux succès/troncature | Erreurs de décodage propagées, pipes bornés, worker et encodeur attendus, comptes de frames et métadonnées validés | Décodage intégral des résultats d'intégration ; échec d'encodeur simulé ; sortie Smoothie audio-seul refusée |
-| Q8 — réponses obsolètes/aperçus | Identifiants de requête, annulation native, chargement au survol, cache borné, huit extractions au lieu de seize | Tests de réponses d'analyse obsolètes et vraie extraction des huit PNG |
-| Q9 — configuration | Écritures sérialisées et atomiques avec temporaires uniques ; erreur propagée sans faux message de succès ni remplacement des données illisibles | Tests de sauvegarde UI ; vérification source des chemins atomiques |
-| Q10 — chemins/sous-titres/couleur | Chemins explicites sans glob, sous-titres texte MP4 et retiming, rejet HDR/bitmap, profil SDR BT709 | Audio AAC copié par hashes de paquets, sous-titres et langues conservés, rejet HDR/no-clobber |
-| Q11 — aperçu final | Extraction du fichier réellement produit | Test du handler de résultat et chemin de sortie réel |
-| Entretien | Wrapper Python de développement unique, logs bornés, sliders sans RAF permanent, CI vérifiable sans payload de release | Tests, lint et builds |
+| Q1 — history and concurrent processing | Immutable job snapshot, independent navigation, global backend reservation before preparation | Production-handler and Rust registry tests |
+| Q2 — overwritten intermediate file | Intermediate MP4 and glob removed; owned temporary files and no-clobber publication | No-clobber and late-publication tests; fixtures with brackets in names |
+| Q3 — orphaned processes | Windows Job Object with kill-on-close, suspended spawn followed by assignment, cleanup guards, cancellation during preparation | Real suspended-descendant termination test and reservation/cancellation tests |
+| Q4 — Smoothie aspect ratio | Dimensions preserved, SAR passed through; encoding overrides without independent width/height rounding | Real Smoothie fixture with SAR 4:3 |
+| Q5 — ineffective settings | Selected recipe/model passed through, configured LUT, non-neutral colour processing activated; unapplied scene/blend controls removed | Rust contracts, model actually used, Smoothie colour/LUT fixture |
+| Q6 — cadence and validation | Rational FPS, average VFR cadence, parameter limits, rotation, and SAR; explicit SDR contract | Fractional FPS, factor 3, VFR, rotation 90, and SAR 4:3 fixtures |
+| Q7 — false success/truncation | Decode errors propagated, bounded pipes, worker and encoder awaited, frame counts and metadata validated | Full decode of integration results; simulated encoder failure; audio-only Smoothie output rejected |
+| Q8 — stale responses/previews | Request identifiers, native cancellation, hover loading, bounded cache, eight extractions instead of sixteen | Stale-analysis-response tests and real extraction of eight PNGs |
+| Q9 — configuration | Serialized atomic writes with unique temporary files; errors propagated without false success or replacement of unreadable data | UI-save tests; source verification of atomic write paths |
+| Q10 — paths/subtitles/colour | Explicit paths without glob, MP4 text subtitles and retiming, HDR/bitmap rejection, SDR BT709 profile | Copied AAC audio verified by packet hashes, subtitles and languages retained, HDR/no-clobber rejection |
+| Q11 — final preview | Extraction from the actual output file | Result-handler and actual-output-path test |
+| Maintenance | One Python development wrapper, bounded logs, sliders without permanent RAF, CI verifiable without release payload | Tests, lint, and builds |
 
-La contre-revue du patch a aussi corrigé deux cas non couverts par l'audit initial : la sélection d'une couverture vidéo intégrée à la place de la piste réelle, et le chargement permissif des poids RIFE. Le worker utilise l'index du flux analysé et charge un checkpoint complet avec `strict=True`, en acceptant les clés normales ou préfixées `module.`. Un modèle incomplet/incompatible échoue avant le décodage ; aucun résultat calculé avec des poids partiellement chargés n'est présenté comme valide.
+Patch review also fixed two cases absent from the original audit: selecting an
+embedded video cover instead of the actual track, and permissive loading of
+RIFE weights. The worker uses the analyzed stream index and loads a complete
+checkpoint with `strict=True`, accepting ordinary or `module.`-prefixed keys.
+An incomplete/incompatible model fails before decoding; results computed with
+partially loaded weights are never presented as valid.
 
-## Performances
+## Performance
 
-Les anciennes estimations par composant (FP16, nombre de processus d'aperçu et encodeur) **ne sont pas des gains cumulables**. La première série exploratoire du patch chevauchait une compilation Rust ; elle est conservée comme preuve mais exclue du bilan de gains.
+The previous per-component estimates for FP16, preview process count, and the
+encoder **are not additive gains**. The patch's first exploratory series
+coincided with a Rust build; it is retained as evidence but excluded from the
+gain report.
 
-Les mesures définitives sont consignées dans [PATCH-PERFORMANCE.json](PATCH-PERFORMANCE.json), avec la révision initiale gelée dans [BASELINE-PATCH.json](BASELINE-PATCH.json). Le protocole compare des durées de processus entiers, incluant démarrage Python, chargement du modèle, décodage, interpolation, audio et encodage. L'ordre avant/après est alterné ; chaque résultat est contrôlé par FFprobe et décodage intégral. Les hashes du code, de la source et du modèle sont conservés.
+Final measurements are recorded in [PATCH-PERFORMANCE.json](PATCH-PERFORMANCE.json),
+with the initial revision frozen in [BASELINE-PATCH.json](BASELINE-PATCH.json).
+The protocol compares complete process durations, including Python startup,
+model loading, decoding, interpolation, audio, and encoding. Before/after order
+is alternated; every result is checked with FFprobe and a full decode. Code,
+source, and model hashes are retained.
 
-Mesures locales sur **RTX 3050 Laptop, 4 Gio VRAM**, source 1680 × 1050 / 120 FPS avec audio, boost ×2. Encodage comparé : x264 CRF18/**medium** ; option NVENC CQ18/p5.
+Local measurements on **RTX 3050 Laptop, 4 GiB VRAM**, 1680 × 1050 / 120 FPS source
+with audio, boost ×2. Encoding comparison: x264 CRF18/**medium**; optional NVENC
+CQ18/p5.
 
-| Profil | 48 images : médiane de 3 essais | Réduction vs ancien | 120 images : 1 essai | Réduction vs ancien |
+| Profile | 48 frames: median of 3 trials | Reduction vs old | 120 frames: 1 trial | Reduction vs old |
 | --- | ---: | ---: | ---: | ---: |
-| Avant : FP32/x264 | 27.07 s | 0.0% | 50.52 s | 0.0% |
-| Patch : FP32/x264 | 21.14 s | 21.9% | 47.65 s | 5.7% |
-| Patch : FP16/x264 | 17.74 s | 34.5% | 34.59 s | 31.5% |
-| Patch : FP16/NVENC | 17.40 s | 35.7% | 32.41 s | 35.8% |
+| Before: FP32/x264 | 27.07 s | 0.0% | 50.52 s | 0.0% |
+| Patch: FP32/x264 | 21.14 s | 21.9% | 47.65 s | 5.7% |
+| Patch: FP16/x264 | 17.74 s | 34.5% | 34.59 s | 31.5% |
+| Patch: FP16/NVENC | 17.40 s | 35.7% | 32.41 s | 35.8% |
 
-Les 16 sorties chronométrées passent les contrôles de cadence, durée, audio et décodage intégral. La série de 120 images est une vérification supplémentaire unique ; elle ne fournit pas de dispersion statistique. Le gain FP32 varie ici de **5,7 à 21,9 %** ; celui de FP16/NVENC reste proche de **36 %**. Ces valeurs décrivent uniquement ces essais locaux.
+All 16 timed outputs pass cadence, duration, audio, and full-decoding checks.
+The 120-frame series is a single additional check and provides no statistical
+spread. FP32 gains vary here from **5.7 to 21.9%**; FP16/NVENC stays near **36%**.
+These values describe only these local tests.
 
-| Comparaison des sorties | SSIM 48 images | PSNR 48 images | SSIM 120 images | PSNR 120 images |
+| Output comparison | SSIM, 48 frames | PSNR, 48 frames | SSIM, 120 frames | PSNR, 120 frames |
 | --- | ---: | ---: | ---: | ---: |
-| Patch FP32 vs ancien FP32 | 0.969939 | 38.13 dB | 0.970412 | 38.26 dB |
+| Patch FP32 vs old FP32 | 0.969939 | 38.13 dB | 0.970412 | 38.26 dB |
 | Patch FP16/x264 vs patch FP32/x264 | 0.973620 | 38.82 dB | 0.973574 | 38.88 dB |
 | Patch FP16/NVENC vs patch FP32/x264 | 0.975968 | 39.28 dB | 0.974627 | 39.17 dB |
 
-Les comparaisons d'images utilisent SSIM/PSNR sur les indices communs, sans constituer une évaluation subjective de qualité. L'ancien pipeline ajoutait une compression MPEG-4 intermédiaire ; le patch encode directement les frames interpolées. La tenue de la dernière frame complète N×facteur images, contrairement à l'ancienne fin plus courte. FP16 peut modifier les valeurs calculées ; **CQ18 NVENC n'équivaut pas à CRF18 x264**.
+Image comparisons use SSIM/PSNR on shared frame indices and are not a subjective
+quality assessment. The old pipeline added intermediate MPEG-4 compression;
+the patch directly encodes interpolated frames. Holding the last frame
+completes N×factor frames, unlike the old shorter tail. FP16 can change computed
+values; **NVENC CQ18 is not equivalent to x264 CRF18**.
 
-Les extraits courts incluent une part importante de chargement du modèle. Ils ne permettent pas d'annoncer un débit stabilisé sur plusieurs minutes, un gain universel, ni un gain en 4K. Les huit aperçus divisent le nombre de processus par deux, sans annoncer un gain de temps de 51% : la luminance locale n'était pas incluse dans ce microbenchmark initial.
+Short clips include a substantial proportion of model-loading time. They do not
+establish sustained throughput over several minutes, a universal gain, or a 4K
+gain. Eight previews halve the number of processes without claiming a 51% time
+gain: local luminance was absent from that initial microbenchmark.
 
-## Validation et reproduction
+## Validation and reproduction
 
-**Résultats finaux :** 19 tests frontend, 11 tests Python, 14 tests Rust et 4 contrôles Python supplémentaires réussis ; 10 cas RIFE réels ou de rejet avant lancement réussis. Test Smoothie réel réussi dans quatre variantes, avec changements de pixels vérifiés. `cargo fmt --check` et Clippy sans avertissement passent. Build Vite et build natif Tauri en release sans bundle réussis ; JS 133,34 kB / gzip 41,48 kB. Les vérifications Rust sans payload utilisent le même override de ressources que la CI.
+**Final results:** 19 frontend tests, 11 Python tests, 14 Rust tests, and 4 extra
+Python checks passed; 10 real RIFE or pre-launch rejection cases passed. Real
+Smoothie testing passed in four variants, with pixel changes verified.
+`cargo fmt --check` and warning-free Clippy pass. Vite and native release Tauri
+builds without a bundle pass; JS is 133.34 kB / gzip 41.48 kB. Rust checks without
+the payload use the same resource override as CI.
 
-Vérifications source seules :
+Source-only checks:
 
 ```powershell
 npm test
@@ -65,7 +99,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 Remove-Item Env:TAURI_CONFIG
 ```
 
-Les tests réels supplémentaires nécessitent le runtime local et le venv CUDA :
+Additional real tests require the local runtime and CUDA virtual environment:
 
 ```powershell
 ..\time-remap-app\venv\Scripts\python.exe scripts\test_pipeline_integration.py --run
@@ -74,16 +108,20 @@ cargo test --manifest-path src-tauri/Cargo.toml bundled_smoothie_pipeline -- --i
 ..\time-remap-app\venv\Scripts\python.exe scripts\benchmark-patch.py --run --frames 120 --repeats 1 --profiles --preset medium --label final-120-clean
 ```
 
-Les scripts de mesures conservent les artefacts dans un dossier unique de `time-remap-app/audit-benchmark`. L'ancien moteur reçoit uniquement des copies de médias et du runtime possédées par le benchmark, pour ne pas réintroduire son risque d'écrasement.
+Measurement scripts retain artifacts in a unique `time-remap-app/audit-benchmark`
+directory. The old engine receives only benchmark-owned copies of media and
+runtime files so its overwrite risk is not reintroduced.
 
-## Limites et travaux futurs
+## Limits and future work
 
-- Le profil de livraison actuel est SDR H.264 8 bits. HDR nécessite une vraie conversion de transfert/tone mapping ; les dimensions impaires sont refusées par le backend actuel.
-- Le runtime Smoothie local exige des métadonnées BT709 cohérentes pour sa conversion LUT ; une source non renseignée ou incompatible doit être refusée avant ce filtre. Ce comportement a été découvert par un essai réel.
-- Les sous-titres texte sont convertis en `mov_text` : les styles ASS avancés ne sont pas conservés. Les sous-titres bitmap sont refusés par RIFE. Le parcours Smoothie ne promet pas de conserver les pistes de sous-titres.
-- La production valide les métadonnées et les fins de processus ; elle ne relance pas systématiquement un décodage intégral du résultat. Les fixtures et benchmarks, eux, exécutent ce décodage pour vérifier les vidéos produites.
-- Les handlers UI sont testés avec une frontière Tauri simulée ; l'inspection visuelle navigateur couvre ABOUT et l'accès aux paramètres avancés. Aucun test automatisé complet de l'interface native sur une installation Windows fraîche n'est revendiqué.
-- Aucun installateur signé ni release n'est publié par ce patch. La compilation native ne remplace pas la validation du payload de distribution et de son installateur.
-- L'extraction des monolithes Svelte/Rust, un worker RIFE persistant, TensorRT, les optimisations 4K et une mesure longue avec RAM/VRAM restent des travaux distincts. Ils ne sont pas présentés comme livrés ni inclus dans les gains.
+- The current delivery profile is SDR 8-bit H.264. HDR requires a real transfer/tone-mapping conversion; the current backend rejects odd dimensions.
+- The local Smoothie runtime requires consistent BT709 metadata for LUT conversion; an untagged or incompatible source must be rejected before that filter. This behaviour was discovered in a real test.
+- Text subtitles are converted to `mov_text`: advanced ASS styles are not retained. RIFE rejects bitmap subtitles. The Smoothie path does not promise to retain subtitle tracks.
+- Production validates metadata and process completion; it does not systematically perform a full decode of each result. Fixtures and benchmarks do perform that decode to verify generated videos.
+- UI handlers are tested with a mocked Tauri boundary; browser visual inspection covers ABOUT and access to advanced settings. No complete automated native-interface test on a fresh Windows installation is claimed.
+- This patch itself publishes no signed installer or release. Native compilation does not replace validation of the distribution payload and its installer.
+- Extracting the Svelte/Rust monoliths, a persistent RIFE worker, TensorRT, 4K optimization, and a long RAM/VRAM measurement remain separate tasks. They are not claimed as delivered or included in the gains.
 
-Les auxiliaires d'entraînement `teacher.*` et `caltime.*` absents du réseau d'inférence sont exclus ; tous les paramètres du réseau sont chargés strictement, avec vérification des dimensions par PyTorch.
+Training helpers `teacher.*` and `caltime.*`, absent from the inference network,
+are excluded; all network parameters are loaded strictly, with PyTorch checking
+their shapes.

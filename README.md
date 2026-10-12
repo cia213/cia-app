@@ -42,6 +42,10 @@ extra downloads.
 first use. It requires a CUDA-capable NVIDIA GPU. See
 [Install and first launch](docs/INSTALL.md) for details.
 
+The main branch includes the [RIFE installation fix](docs/CORRECTION-INSTALLATION-RIFE.md).
+It requires a new installer; the published v1.2.5 installer retains its original
+installation behaviour.
+
 ## Build from source
 
 Prerequisites: current Node.js, Rust stable, and Windows build tools.
@@ -84,6 +88,13 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D w
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
+On Windows, the private Python bootstrap test downloads and verifies the official
+package without changing the system's Python installation or user `PATH`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests/test_bootstrap.ps1
+```
+
 GPU and runtime integration checks are opt-in and documented in the report.
 
 ## Licence and notices
@@ -91,3 +102,4 @@ GPU and runtime integration checks are opt-in and documented in the report.
 cia render source code is MIT licensed. Third-party software keeps its own
 licence; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Nothing in this
 repository grants redistribution rights for an external runtime or model.
+Original third-party licence texts are retained unchanged.

@@ -1,4 +1,7 @@
-# cia render V1 - runtime and distribution notes
+# cia render V1 - runtime and distribution notes (historical)
+
+This document records the original V1 design. For current behaviour, see
+[Install and first launch](INSTALL.md) and [runtime release notes](RUNTIME-RELEASE-NOTES.md).
 
 ## What the NSIS installer contains
 
@@ -11,16 +14,16 @@
 
 | Component | Reason | First-launch behaviour |
 | --- | --- | --- |
-| Python/CUDA environment | Current development environment is about 4.9 Gio and is not reproducibly packaged. | Select a Python executable. |
+| Python/CUDA environment | The original development environment was about 4.9 GiB and was not reproducibly packaged. | Select a Python executable. |
 | Practical-RIFE and `flownet.pkl` | Code and model distribution must be versioned and audited independently. | Select the RIFE folder and model. |
 | FFmpeg / FFprobe | Licence obligations depend on the chosen build. | Select both executables. |
 | smoothie-rs runtime | Bundle contains additional software requiring a release-level licence audit. | Select root/executable; recipe is detected when present. |
 | LUTs and media | User content and provenance-specific assets. | Optional local paths only. |
 
-This is an intentional V1 boundary. The installer is functional on a clean
-machine: it starts, displays setup, validates paths, persists configuration,
-and enables each render operation only when its real local runtime is ready.
-It never claims that missing render engines are installed.
+This separation belongs to the original V1 design. The installer starts,
+displays setup, validates paths, persists configuration, and enables each render
+operation only when its local runtime is ready. Missing render engines are not
+reported as installed.
 
 ## Configuration contract
 

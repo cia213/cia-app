@@ -19,7 +19,7 @@
       "resources/rife_worker.py",
       "resources/runtime",
       "resources/bootstrap/bootstrap-rife.ps1",
-      "resources/bootstrap/python-3.11.9-amd64.exe"
+      "resources/bootstrap/bootstrap-python.ps1"
     ],
     "icon": [
       "icons/32x32.png",

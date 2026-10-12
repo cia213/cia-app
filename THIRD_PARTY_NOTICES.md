@@ -11,7 +11,7 @@ runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
 | smoothie-rs | Bundled local render runtime | GPL-3.0, portable release `Nightly_2025.11.30_14-36`, commit `3da73de9df0c991801c4f8474b320445fb25a208`. Its GPL text, embedded Python licence and all archive notices are retained; provenance and file hashes are in `resources/RELEASE-PAYLOAD.json`. |
 | VapourSynth | Supplied within the bundled Smoothie runtime | Its own LGPL terms and notices are preserved in the staged runtime payload. |
 | FFmpeg | Bundled media probing and encoding tools | Current staged build identifies itself as GPLv3. Public distribution requires the corresponding GPL notice and source-availability obligations for that exact build. |
-| Python 3.11.9 | Optional RIFE bootstrap | Official Windows installer bundled under the Python Software Foundation License; SHA-256 recorded in runtime release notes. |
+| Python 3.11.9 | Optional RIFE bootstrap | Python Software Foundation License. v1.2.4/v1.2.5 bundle the official Windows installer; the fixed bootstrap downloads the verified official NuGet package and retains `LICENSE.txt`. SHA-256 hashes are recorded in runtime release notes. |
 | Tauri | Desktop application framework | Apache-2.0 OR MIT according to installed dependency metadata. |
 | Svelte and Vite | Frontend framework and build tooling | MIT according to installed dependency metadata. |
 | IBM Plex Sans and Mono | Bundled frontend typography | SIL Open Font License 1.1 according to installed Fontsource metadata. |
@@ -20,3 +20,6 @@ runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
 Project names and marks remain the property of their respective owners. CIA
 RENDER's local ABOUT marks are compact interface identifiers, not a claim of
 endorsement.
+
+Original third-party licence texts remain unchanged; these notices do not replace
+them.

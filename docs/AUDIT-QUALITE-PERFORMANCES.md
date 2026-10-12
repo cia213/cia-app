@@ -1,263 +1,263 @@
-# Audit qualité et performances de cia render
+# cia render code quality and performance audit
 
-**Date : 30 septembre 2026 · version 1.2.3 · commit audité : `241f350`.**
+**Date: September 30, 2026 · version 1.2.3 · audited commit: `241f350`.**
 
-> Audit historique du code **avant correction**. Les constats, numéros de ligne et mesures ci-dessous décrivent cette révision, pas le patch actuel. Le bilan des corrections et leurs validations est dans [PATCH-QUALITE-PERFORMANCES.md](PATCH-QUALITE-PERFORMANCES.md). Les microbenchmarks de cet audit ne sont pas des gains mesurés sur l'application corrigée.
+> Historical audit of the code **before fixes**. The findings, line numbers, and measurements below describe that revision, not the current patch. The fixes and their validation are documented in [PATCH-QUALITE-PERFORMANCES.md](PATCH-QUALITE-PERFORMANCES.md). The microbenchmarks in this audit are not measured gains for the patched application.
 
-Périmètre : sources Svelte/Tauri, script Python embarqué, script autonome de `time-remap-app`, moteur RIFE local et runtime Smoothie local. Les ressources binaires ignorées par Git sont évaluées comme composants de l'installation locale, sans supposer qu'une autre release contient exactement les mêmes fichiers.
+Scope: Svelte/Tauri sources, bundled Python script, standalone `time-remap-app` script, local RIFE engine, and local Smoothie runtime. Binary resources ignored by Git are assessed as components of the local installation, without assuming that another release contains exactly the same files.
 
 ## Conclusion
 
-Les parcours nominaux fonctionnent dans les essais réalisés : le frontend compile, les sept tests Rust passent et les moteurs RIFE/Smoothie produisent des vidéos dans les benchmarks. Les contrôles de noms de sortie, la configuration versionnée, le streaming des logs et la séparation des runtimes sont de bonnes bases.
+The normal workflows work in the tests performed: the frontend builds, all seven Rust tests pass, and the RIFE/Smoothie engines produce videos in the benchmarks. Output name checks, versioned configuration, log streaming, and separate runtimes provide a sound foundation.
 
-Les priorités sont cependant la **propriété des jobs et des fichiers temporaires**, puis la **fidélité entre les paramètres affichés et ceux réellement appliqués**. Les principaux gains de performance se trouvent dans les passes vidéo répétées et les choix de moteur/encodeur, davantage que dans la taille du frontend.
+The priorities, however, are **ownership of jobs and temporary files**, followed by **consistency between displayed settings and the settings actually applied**. The main performance gains lie in repeated video passes and engine/encoder choices, more than in frontend size.
 
-Le lien entre les deux audits est direct : une chaîne mieux définie évite les traitements concurrents accidentels, les décodages inutiles, les intermédiaires non maîtrisés et les reprises complètes après erreur.
+The connection between the two audits is direct: a better-defined pipeline prevents accidental concurrent processing, unnecessary decoding, uncontrolled intermediate files, and full restarts after errors.
 
-## Vérifications et méthode
+## Checks and methodology
 
-| Vérification | Résultat |
+| Check | Result |
 | --- | --- |
-| `npm run build` | Réussi ; JS produit ≈ 126,79 kB, gzip ≈ 39,67 kB |
-| `cargo test --manifest-path src-tauri/Cargo.toml` | 7 tests réussis, aucun échec |
-| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | Échec : 3 diagnostics, décrits plus bas |
-| Syntaxe des deux scripts Python par `ast.parse` | Valide |
-| NVIDIA / PyTorch | RTX 3050 Laptop, 4 Gio VRAM ; PyTorch 2.5.1+cu121 ; CUDA disponible |
-| Modèle RIFE local | SHA-256 identique au hash 4.26 attendu par le bootstrap |
-| Benchmarks | Deux exécutions par variante RIFE ; trois par variante aperçus/FFmpeg ; mesures Smoothie complémentaires |
+| `npm run build` | Passed; generated JS ≈ 126.79 kB, gzip ≈ 39.67 kB |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 7 tests passed, no failures |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` | Failed: 3 diagnostics, described below |
+| Syntax of both Python scripts using `ast.parse` | Valid |
+| NVIDIA / PyTorch | RTX 3050 Laptop, 4 GiB VRAM; PyTorch 2.5.1+cu121; CUDA available |
+| Local RIFE model | SHA-256 matches the 4.26 hash expected by the bootstrap |
+| Benchmarks | Two runs per RIFE variant; three per preview/FFmpeg variant; additional Smoothie measurements |
 
-Source de performance : `test_clip_topaz_source_2s.mp4`, 1680 × 1050, 120 FPS, 242 images et ≈ 2,017 s. Pour RIFE : extrait temporaire de 48 images, 0,4 s, même résolution, facteur ×2. Tous les résultats vidéo de benchmark sont créés dans des répertoires temporaires puis supprimés. Les sources et le code de production restent inchangés.
+Performance source: `test_clip_topaz_source_2s.mp4`, 1680 × 1050, 120 FPS, 242 frames, and ≈ 2.017 s. For RIFE: temporary 48-frame excerpt, 0.4 s, same resolution, ×2 factor. All benchmark video outputs are created in temporary directories and then deleted. The sources and production code remain unchanged.
 
-Les temps incluent démarrage de processus, chargement du modèle et écriture. Ce sont des **microbenchmarks locaux**, avec caches et ordre d'exécution non randomisé ; ils ne mesurent pas un débit stabilisé sur une longue vidéo. Pas de mesure visuelle comparative FP16/FP32, pas de mesure de pic RAM/VRAM et pas de benchmark 4K/HDR/VFR complet. Les pourcentages ne s'additionnent pas entre étapes.
+Timings include process startup, model loading, and writing. These are **local microbenchmarks**, with caches and a non-randomized execution order; they do not measure steady-state throughput on a long video. No comparative FP16/FP32 visual assessment, no peak RAM/VRAM measurement, and no complete 4K/HDR/VFR benchmark. Percentages cannot be added across stages.
 
-Les données brutes sont dans [AUDIT-MESURES.json](AUDIT-MESURES.json) et [AUDIT-PREUVES.json](AUDIT-PREUVES.json). Les scripts de reproduction sont `C:/Users/cia/time-remap-app/audit_quality_performance.py` et `audit_quality_checks.py` ; lancer ces scripts avec le Python du venv local. Le second script complète les mesures Smoothie avec filtres identiques.
+Raw data is available in [AUDIT-MESURES.json](AUDIT-MESURES.json) and [AUDIT-PREUVES.json](AUDIT-PREUVES.json). Reproduction scripts are `C:/Users/cia/time-remap-app/audit_quality_performance.py` and `audit_quality_checks.py`; run these scripts with the local virtual environment's Python. The second script adds Smoothie measurements with identical filters.
 
-## Audit qualité — problèmes prioritaires
+## Code quality audit — priority issues
 
-Priorités : **P1** = correction prioritaire, risque de données/résultat ou de perte du suivi du traitement ; **P2** = fiabilité fonctionnelle et maîtrise des ressources ; **P3** = maintenance et optimisation secondaire. « Reproduit » désigne un contrôle exécuté ; « lecture » désigne un chemin confirmé dans le code dont le scénario complet n'a pas été exécuté.
+Priorities: **P1** = priority fix, with a risk to data/results or loss of processing control; **P2** = functional reliability and resource management; **P3** = maintenance and secondary optimization. "Reproduced" means a check was executed; "code inspection" means a path was confirmed in the code without running the complete scenario.
 
-### Q1 — P1 : l'historique peut faire disparaître un job actif
+### Q1 — P1: history navigation can make an active job disappear
 
-**Source :** [App.svelte, `applyHistoryEntry`](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L232), boutons d'historique autour de L1248, et `anyProcessing` L335. **Preuve : reproduit en exécutant la fonction extraite avec Node.**
+**Source:** [App.svelte, `applyHistoryEntry`](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L232), history buttons around L1248, and `anyProcessing` L335. **Evidence: reproduced by executing the extracted function with Node.**
 
-Si un rendu est actif et l'utilisateur revient à une entrée sans vidéo sélectionnée, `applyHistoryEntry` met `isSmoothieProcessing` ou `isProcessing` à `false`. Aucun arrêt du processus n'est demandé. Les boutons d'historique et les raccourcis Alt+flèches restent utilisables pendant le rendu. `anyProcessing` devient faux et peut autoriser un autre traitement alors que le premier continue. Les logs et `activeRenderJobId` sont partagés, ce qui compromet ensuite le suivi et l'annulation.
+If a render is active and the user returns to an entry with no selected video, `applyHistoryEntry` sets `isSmoothieProcessing` or `isProcessing` to `false`. No process stop is requested. History buttons and Alt+arrow shortcuts remain available during rendering. `anyProcessing` becomes false and can allow another operation while the first continues. Logs and `activeRenderJobId` are shared, compromising subsequent tracking and cancellation.
 
-**Correction :** séparer l'état de navigation de l'état des jobs ; garder le job actif dans un store dédié, attaché à une entrée immuable (source, paramètres, destination). Ajouter une garde backend globale si un seul traitement est autorisé. Une navigation peut changer la page sans modifier l'existence du job.
+**Fix:** separate navigation state from job state; keep the active job in a dedicated store, attached to an immutable entry (source, settings, destination). Add a global backend guard if only one operation is allowed. Navigation can change the page without changing whether a job exists.
 
-**Vérification :** démarrer un traitement A, naviguer en arrière, tenter B, puis annuler A ; A doit rester visible et contrôlable, et B respecter la politique de concurrence.
+**Verification:** start operation A, navigate backward, attempt B, then cancel A; A must remain visible and controllable, and B must respect the concurrency policy.
 
-### Q2 — P1 : l'intermédiaire RIFE peut écraser puis supprimer un fichier préexistant
+### Q2 — P1: the RIFE intermediate file can overwrite and then delete an existing file
 
-**Sources :** [script embarqué L134](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/resources/time_remap.py#L134), recherche L181 et suppression L289 ; `Practical-RIFE/inference_video.py` L134–138. **Preuve : lecture du chemin complet, sans essai destructif.**
+**Sources:** [bundled script L134](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/resources/time_remap.py#L134), search L181 and deletion L289; `Practical-RIFE/inference_video.py` L134–138. **Evidence: complete path inspected, without a destructive test.**
 
-Rust réserve la destination finale, mais le script ne transmet pas `--output` à RIFE. RIFE ouvre son nom par défaut, dérivé de la source, avec `cv2.VideoWriter`. Si `clip_2X_240fps.mp4` existe déjà, cette ouverture peut l'écraser. Après encodage, le script supprime ce même fichier. Le verrou sur `clip-240fps.mp4` ne le protège pas.
+Rust reserves the final destination, but the script does not pass `--output` to RIFE. RIFE opens its default name, derived from the source, with `cv2.VideoWriter`. If `clip_2X_240fps.mp4` already exists, opening it can overwrite it. After encoding, the script deletes that same file. The lock on `clip-240fps.mp4` does not protect it.
 
-**Correction :** un répertoire temporaire unique par job, un chemin intermédiaire explicite passé à `--output`, et un nettoyage limité aux fichiers possédés par ce job. Supprimer la découverte par glob/date de modification. Garder un résultat validé si l'étape suivante échoue.
+**Fix:** a unique temporary directory per job, an explicit intermediate path passed to `--output`, and cleanup limited to files owned by that job. Remove discovery by glob/modification time. Keep a validated result if the next stage fails.
 
-**Vérification :** précréer le nom RIFE historique avec un contenu connu ; son hash doit rester intact après succès, échec et annulation.
+**Verification:** create the historical RIFE filename beforehand with known contents; its hash must remain unchanged after success, failure, and cancellation.
 
-### Q3 — P1 : cycle de vie des processus incomplet
+### Q3 — P1: incomplete process lifecycle management
 
-**Sources :** [lib.rs L1600](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L1600), L1688 et [bouton fermer L1279](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L1279). **Preuve : lecture.**
+**Sources:** [lib.rs L1600](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L1600), L1688, and [close button L1279](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L1279). **Evidence: code inspection.**
 
-Les moteurs sont lancés avant `register_job`. Un identifiant vide/déjà utilisé fait donc échouer l'enregistrement après le démarrage. Les sorties anticipées par `?` ne garantissent pas l'arrêt du processus ni le retrait du registre. Aucun traitement de fermeture de fenêtre/arrêt de l'application ni propriétaire Windows de l'arbre de processus n'est défini. Des enfants peuvent continuer, ou rester suspendus après fermeture.
+Engines are launched before `register_job`. An empty or already-used identifier therefore causes registration to fail after startup. Early returns through `?` do not guarantee that the process stops or is removed from the registry. No handling of window closure/application shutdown or Windows ownership of the process tree is defined. Child processes can continue running or remain suspended after closing.
 
-**Correction :** réserver le job avant le spawn ; centraliser le lancement dans un gestionnaire avec finalisation garantie. Sous Windows, envisager un Job Object pour posséder l'arbre et terminer les descendants à la fermeture. `kill_on_drop` peut compléter la protection du parent, mais ne suffit pas à garantir l'arrêt de tout l'arbre.
+**Fix:** reserve the job before spawning; centralize launching in a manager with guaranteed finalization. On Windows, consider a Job Object to own the process tree and terminate descendants on closure. `kill_on_drop` can supplement protection of the parent, but is insufficient to guarantee that the whole tree stops.
 
-**Vérification :** rejet d'identifiant, erreur de lecture, fermeture pendant calcul et fermeture pendant pause ; aucun moteur ni verrou ne doit rester orphelin.
+**Verification:** identifier rejection, read error, closure during processing, and closure while paused; no engine or lock should remain orphaned.
 
-### Q4 — P1 sur le runtime local : la recette Smoothie déforme certains ratios
+### Q4 — P1 for the local runtime: the Smoothie recipe distorts some aspect ratios
 
-**Source :** `src-tauri/resources/runtime/smoothie/recipe.ini`, L25. **Preuve : expression lue ; dimensions vérifiées dans les mesures Smoothie avec filtres identiques.**
+**Source:** `src-tauri/resources/runtime/smoothie/recipe.ini`, L25. **Evidence: expression inspected; dimensions verified in Smoothie measurements with identical filters.**
 
-La largeur et la hauteur sont arrondies indépendamment vers des paliers, puis `setsar=1/1` est appliqué. Ainsi, 1680 × 1050 (16:10) devient 1920 × 1080 (16:9). Ce traitement augmente aussi le nombre de pixels à encoder. Les vidéos verticales ou hors 16:9 peuvent également changer de proportions.
+Width and height are rounded independently to stepped values, then `setsar=1/1` is applied. Thus, 1680 × 1050 (16:10) becomes 1920 × 1080 (16:9). This processing also increases the number of pixels to encode. Vertical videos or videos outside 16:9 can also change proportions.
 
-**Correction :** conserver les dimensions par défaut ; proposer une résolution explicite avec ratio conservé, dimensions paires et padding éventuel. Auditer aussi `defaults.ini`, qui contient des arguments de secours différents, dont un filtre audio `rubberband=tempo=1.07`.
+**Fix:** preserve dimensions by default; offer an explicit resolution that preserves the aspect ratio, with even dimensions and padding if needed. Also audit `defaults.ini`, which contains different fallback arguments, including an audio filter `rubberband=tempo=1.07`.
 
-**Vérification :** sources 16:10, 4:3, 16:9 et verticales ; comparer ratio d'affichage, durée audio et dimensions finales. Ce constat porte sur le runtime local ignoré par Git, pas sur toutes les releases publiées.
+**Verification:** 16:10, 4:3, 16:9, and vertical sources; compare display aspect ratio, audio duration, and final dimensions. This finding concerns the local runtime ignored by Git, not every published release.
 
-### Q5 — P2 : réglages visibles mais non appliqués
+### Q5 — P2: settings are visible but not applied
 
-**Sources :** [overrides Svelte L1017](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L1017), [runtime Smoothie L786](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L786), [lancement Smoothie L1650](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L1650), [runtime RIFE L763](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L763), script Python L129–136.
+**Sources:** [Svelte overrides L1017](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L1017), [Smoothie runtime L786](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L786), [Smoothie launch L1650](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L1650), [RIFE runtime L763](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L763), Python script L129–136.
 
-| Réglage | Comportement observé | Correction |
+| Setting | Observed behavior | Fix |
 | --- | --- | --- |
-| `sceneThreshold` / `blendCuts` | Le premier change le décompte, le second est affiché ; les timestamps ne pilotent pas RIFE et aucun fondu n'est appliqué | Implémenter le comportement et ses tests ou retirer/désactiver le réglage |
-| Correction couleur | Luminosité/saturation/contraste sont transmis, mais aucun override `color grading;enabled;yes` ; la recette locale désactive cette section | Définir activation et paramètres ensemble |
-| Recette choisie | Le chemin est sauvegardé/affiché mais non passé avec `--recipe` à smoothie-rs | Ajouter le chemin effectif à `SmoothieRuntimePaths` et à la commande |
-| LUT choisie | `lutFile` est stocké, mais son chemin ne figure pas dans la commande de rendu | Transmettre le chemin avec une validation réelle |
-| Modèle RIFE choisi | `modelFile` est validé, mais aucun `--model` n'est transmis ; l'inférence importe en plus le code de `train_log` | Définir une installation modèle cohérente code + poids, puis utiliser ce chemin |
+| `sceneThreshold` / `blendCuts` | The former changes the count, the latter is displayed; timestamps do not control RIFE and no fade is applied | Implement the behavior and tests, or remove/disable the setting |
+| Color correction | Brightness/saturation/contrast are passed, but no `color grading;enabled;yes` override; the local recipe disables this section | Define activation and parameters together |
+| Selected recipe | The path is saved/displayed but not passed to smoothie-rs with `--recipe` | Add the effective path to `SmoothieRuntimePaths` and the command |
+| Selected LUT | `lutFile` is stored, but its path is absent from the render command | Pass the path with actual validation |
+| Selected RIFE model | `modelFile` is validated, but no `--model` is passed; inference also imports code from `train_log` | Define a consistent model installation containing code and weights, then use that path |
 
-Le moteur Smoothie expose bien `--recipe` dans son aide. Les réglages couleur et la recette effective sont contrôlés via `--return-recipe` dans les preuves complémentaires. Une validation de chemin seule ne signifie pas qu'un réglage est utilisé.
+The Smoothie engine does expose `--recipe` in its help. Color settings and the effective recipe are checked using `--return-recipe` in the supplementary evidence. Path validation alone does not mean that a setting is used.
 
-### Q6 — P2 : validation d'entrée et cadence trop permissives
+### Q6 — P2: input and frame rate validation are too permissive
 
-**Sources :** [lib.rs L924](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L924), L1221, [Python L96](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/resources/time_remap.py#L96), et `inference_video.py` L68. **Preuve : lecture.**
+**Sources:** [lib.rs L924](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L924), L1221, [Python L96](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/resources/time_remap.py#L96), and `inference_video.py` L68. **Evidence: code inspection.**
 
-Rust accepte tout facteur fini positif ; le CLI RIFE exige un entier et l'UI prévoit 2 à 10. CRF, preset et seuil ne sont pas validés par une structure commune. Les préférences sont des objets JSON libres. FFprobe peut être interprété comme une vidéo de dimensions/durée nulles plutôt que rejeté. La cadence utilise `r_frame_rate` puis des arrondis, alors que RIFE lit les FPS avec OpenCV ; le repérage récent du fichier résout le nom, sans définir une politique VFR ni garantir une cadence rationnelle fidèle.
+Rust accepts any finite positive factor; the RIFE CLI requires an integer and the UI provides 2 to 10. CRF, preset, and threshold are not validated by a shared structure. Preferences are unrestricted JSON objects. FFprobe output can be interpreted as video with zero dimensions/duration instead of being rejected. Frame rate uses `r_frame_rate` followed by rounding, while RIFE reads FPS through OpenCV; recent file discovery resolves the name without defining a VFR policy or ensuring an accurate rational frame rate.
 
-**Correction :** modèles typés et validation backend avant lancement ; FPS rationnels, durée/stream valides ; politique explicite pour VFR (préserver les timestamps ou normaliser une seule fois). Accepter un entier ×2…×10 tant que c'est le contrat réel.
+**Fix:** typed models and backend validation before launch; rational FPS, valid duration/stream; an explicit VFR policy (preserve timestamps or normalize once). Accept an integer ×2…×10 while that is the actual contract.
 
-**Vérification :** paramètres hors bornes, 23,976/29,97 FPS, cadence variable, fichier audio seul et source illisible. Comparer durée, timestamps et nombre de frames.
+**Verification:** out-of-range parameters, 23.976/29.97 FPS, variable frame rate, audio-only files, and unreadable sources. Compare duration, timestamps, and frame count.
 
-### Q7 — P2 : un fichier non vide est considéré comme un résultat valide
+### Q7 — P2: a nonempty file is considered a valid result
 
-**Sources :** [lib.rs L1262](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L1262) ; RIFE `build_read_buffer` L152–162 et finalisation L275–279. **Preuve : lecture ; résultat nominal mesuré.**
+**Sources:** [lib.rs L1262](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L1262); RIFE `build_read_buffer` L152–162 and finalization L275–279. **Evidence: code inspection; normal output measured.**
 
-Le lecteur RIFE masque toute exception avec `except: pass`, ce qui peut transformer une erreur de décodage en fin de vidéo. La finalisation attend que la queue soit vide, sans joindre le thread d'écriture ; une queue vide ne garantit pas que le dernier `write` soit fini avant `release`. Rust vérifie seulement existence et taille du fichier. Une sortie tronquée peut donc être déclarée terminée.
+The RIFE reader hides every exception with `except: pass`, which can turn a decoding error into end-of-video. Finalization waits until the queue is empty without joining the writer thread; an empty queue does not guarantee that the last `write` has finished before `release`. Rust checks only file existence and size. A truncated output can therefore be declared complete.
 
-**Correction :** propager les erreurs des workers, joindre explicitement le writer, vérifier l'ouverture du `VideoWriter`, puis contrôler durée, cadence, frames attendues et streams par FFprobe. Réserver un décodage exhaustif aux tests de référence ou à un mode de validation approfondie.
+**Fix:** propagate worker errors, explicitly join the writer, verify that `VideoWriter` opens, then check duration, frame rate, expected frames, and streams with FFprobe. Reserve exhaustive decoding for reference tests or a thorough validation mode.
 
-Les benchmarks RIFE donnent 95 images pour 48 entrées ×2, soit `(48−1)×2+1`, et non 96. Ce comportement explique 0,395833 s au lieu de 0,4 s ; il faut décider et tester la politique du dernier intervalle plutôt que marquer cette différence comme une corruption.
+RIFE benchmarks produce 95 frames for 48 inputs ×2, namely `(48−1)×2+1`, rather than 96. This behavior explains 0.395833 s instead of 0.4 s; the last-interval policy must be decided and tested rather than marking this difference as corruption.
 
-### Q8 — P2 : erreurs de chargement et tâches d'aperçu obsolètes
+### Q8 — P2: loading errors and stale preview tasks
 
-**Sources :** [loadVideo L821](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L821), [loadSmoothie L985](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L985), chargement des aperçus L461–502. **Preuve : lecture.**
+**Sources:** [loadVideo L821](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L821), [loadSmoothie L985](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L985), preview loading L461–502. **Evidence: code inspection.**
 
-Les images sont protégées par des identifiants de requête, mais les réponses `analyze_video` ne le sont pas. Importer A puis B rapidement peut laisser les métadonnées de A avec le chemin B, ou une erreur tardive de A effacer B. Un ancien scan d'aperçus continue par ailleurs à lancer ses processus FFmpeg même lorsque son résultat sera rejeté.
+Images are protected by request identifiers, but `analyze_video` responses are not. Importing A then B quickly can leave A's metadata with B's path, or a late error from A can clear B. An old preview scan also continues launching its FFmpeg processes even when its result will be discarded.
 
-**Correction :** identifiant de sélection pour analyse et aperçu ; annulation des processus obsolètes côté Rust ; différer les aperçus facultatifs lorsqu'un moteur travaille. Le traitement doit conserver une copie immuable de ses paramètres, y compris l'option auto-render.
+**Fix:** a selection identifier for analysis and previews; cancellation of obsolete processes on the Rust side; defer optional previews while an engine is working. Processing must retain an immutable copy of its settings, including the auto-render option.
 
-### Q9 — P2 : configuration et messages de sauvegarde fragiles
+### Q9 — P2: fragile configuration and save messages
 
-**Sources :** [lib.rs L448](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L448), L1339 ; [App.svelte L93](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L93), L157 et L324. **Preuve : lecture.**
+**Sources:** [lib.rs L448](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/src/lib.rs#L448), L1339; [App.svelte L93](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L93), L157, and L324. **Evidence: code inspection.**
 
-`save_ui_preferences` repart d'une configuration vide si le chargement échoue, puis écrit cette configuration : un fichier invalide ou momentanément inaccessible peut faire perdre les chemins existants. Le fichier temporaire porte seulement le PID ; des écritures concurrentes, notamment depuis l'installation asynchrone, ne sont pas coordonnées. Côté UI, `persistUiPreferences` absorbe l'erreur et le caller affiche ensuite « settings saved ».
+`save_ui_preferences` starts from an empty configuration if loading fails, then writes that configuration: an invalid or temporarily inaccessible file can cause existing paths to be lost. The temporary filename contains only the PID; concurrent writes, particularly from asynchronous installation, are not coordinated. On the UI side, `persistUiPreferences` swallows the error and the caller then displays "settings saved".
 
-**Correction :** ne pas écraser une configuration qui n'a pas pu être lue ; gérer explicitement réparation/migration. Sérialiser les mises à jour avec un verrou, utiliser un temporaire unique, puis propager succès/échec jusqu'au message utilisateur.
+**Fix:** do not overwrite a configuration that could not be read; handle repair/migration explicitly. Serialize updates with a lock, use a unique temporary file, then propagate success/failure through to the user message.
 
-### Q10 — P2 : noms spéciaux, sous-titres et couleurs non couverts
+### Q10 — P2: special filenames, subtitles, and colors are not covered
 
-**Sources :** [glob Python L182](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/resources/time_remap.py#L182), mapping des sous-titres L215, encodeur L218. **Preuve : nom avec crochets reproduit ; autres cas par lecture.**
+**Sources:** [Python glob L182](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src-tauri/resources/time_remap.py#L182), subtitle mapping L215, encoder L218. **Evidence: filename with brackets reproduced; other cases inspected in code.**
 
-- `clip [v1]` est traité comme un motif glob. La reproduction montre un fichier existant et zéro correspondance. Un chemin intermédiaire explicite résout à la fois ce défaut et Q2.
-- Les sous-titres sont copiés dans un MP4 sans vérifier leur codec ; SubRip/ASS ne passent pas par une conversion adaptée. En slowmo, leurs timestamps ne sont pas étirés.
-- La chaîne force `yuv420p` et des tags BT.709 sans conversion HDR ou politique 10 bits. Changer les tags ne réalise pas un tone mapping.
+- `clip [v1]` is treated as a glob pattern. Reproduction shows an existing file and zero matches. An explicit intermediate path addresses both this issue and Q2.
+- Subtitles are copied into an MP4 without checking their codec; SubRip/ASS do not undergo a suitable conversion. In slow motion, their timestamps are not stretched.
+- The pipeline forces `yuv420p` and BT.709 tags without HDR conversion or a 10-bit policy. Changing tags does not perform tone mapping.
 
-**Correction :** contrat d'entrée/sortie documenté, codecs compatibles, sous-titres retimés ou exclusion explicite, traitement colorimétrique cohérent avec la source. Tests dédiés avant d'annoncer un support universel.
+**Fix:** a documented input/output contract, compatible codecs, retimed subtitles or explicit exclusion, and color processing consistent with the source. Dedicated tests are needed before claiming universal support.
 
-### Q11 — P2 : l'aperçu final n'est pas extrait du résultat
+### Q11 — P2: the final preview is not extracted from the result
 
-**Source :** [loadOutputPreview L505](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L505), aperçu live L513. **Preuve : lecture.**
+**Source:** [loadOutputPreview L505](https://github.com/cia213/cia-app/blob/241f350025e7e8504d0f5eae1f3c46ea283778cd/src/App.svelte#L505), live preview L513. **Evidence: code inspection.**
 
-`loadOutputPreview` ignore effectivement les paramètres `path` et `duration` et réutilise l'image source/live. L'aperçu live utilise `tmix` sur la source et ne reproduit pas nécessairement la recette Smoothie, la LUT ou les corrections couleur. Le résultat peut sembler visuellement inchangé même quand le fichier réel diffère.
+`loadOutputPreview` effectively ignores the `path` and `duration` parameters and reuses the source/live image. The live preview uses `tmix` on the source and does not necessarily reproduce the Smoothie recipe, LUT, or color corrections. The result can appear visually unchanged even when the actual file differs.
 
-**Correction :** extraire une image du vrai fichier final après succès ; présenter l'aperçu de source pendant calcul comme une approximation, ou utiliser un aperçu fidèle à la recette. Éviter de rendre une vidéo complète pour produire une seule vignette.
+**Fix:** extract an image from the actual final file after success; present the source preview during processing as an approximation, or use a preview faithful to the recipe. Avoid rendering a complete video to produce a single thumbnail.
 
-## Maintenance et couverture — P3
+## Maintenance and coverage — P3
 
-- **Concentration du code :** `App.svelte` ≈ 3918 lignes, `lib.rs` ≈ 1950 lignes. Séparer jobs, configuration, outils média, aperçu, installation et updater. Garder la navigation et la présentation distinctes de l'exécution.
-- **Deux scripts divergents :** partager une implémentation d'orchestration testée ; faire du script autonome un point d'entrée mince. Les correctifs du script embarqué ne sont pas présents automatiquement dans le script autonome.
-- **Clippy :** fermeture immédiatement appelée (`lib.rs:264`), `repeat().take()` (`1097`), commande avec trop d'arguments (`1539`). Ce sont des diagnostics de maintenance, pas la preuve de trois erreurs de rendu.
-- **Télémétrie :** `live-log` transporte du texte sans `jobId`. Les regex dépendent de la page active et du format des outils. Préférer des événements typés `{jobId, phase, frame, total, fps, elapsed, error}` et garder le texte pour le diagnostic.
-- **Mémoire des logs :** Python conserve tout stderr RIFE (`all_stderr`), Rust collecte toutes les lignes (`pump_and_collect`), même si l'UI limite à 500. Garder une queue bornée et éventuellement un fichier de diagnostic par job.
-- **CI/distribution :** les tests ne couvrent pas les moteurs bout à bout, le frontend ou les interruptions. Le workflow construit un installateur alors que ses payloads sont ignorés et leur préparation n'apparaît pas dans les étapes. Séparer vérification des sources et construction d'une release reproductible. Mettre à jour `PORTABILITY-PLAN.md`, devenu historique.
+- **Code concentration:** `App.svelte` ≈ 3918 lines, `lib.rs` ≈ 1950 lines. Separate jobs, configuration, media tools, previews, installation, and updater. Keep navigation and presentation separate from execution.
+- **Two diverging scripts:** share a tested orchestration implementation; make the standalone script a thin entry point. Fixes to the bundled script are not automatically present in the standalone script.
+- **Clippy:** immediately invoked closure (`lib.rs:264`), `repeat().take()` (`1097`), command with too many arguments (`1539`). These are maintenance diagnostics, not evidence of three rendering errors.
+- **Telemetry:** `live-log` carries text without a `jobId`. Regexes depend on the active page and tool format. Prefer typed events `{jobId, phase, frame, total, fps, elapsed, error}` and keep text for diagnostics.
+- **Log memory:** Python retains all RIFE stderr (`all_stderr`), Rust collects all lines (`pump_and_collect`), even though the UI limits them to 500. Keep a bounded queue and optionally a diagnostic file per job.
+- **CI/distribution:** tests do not cover engines end to end, the frontend, or interruptions. The workflow builds an installer while its payloads are ignored and their preparation is absent from the steps. Separate source verification from reproducible release construction. Update `PORTABILITY-PLAN.md`, which has become historical.
 
-## Audit performances — mesures
+## Performance audit — measurements
 
-| Variante | Temps médian local | Lecture |
+| Variant | Local median time | Interpretation |
 | --- | ---: | --- |
-| RIFE FP32, scale 1 | 14,11 s | Référence ; 48 images à 1680 × 1050, ×2 |
-| RIFE FP16, scale 1 | 11,50 s | ≈ 18,5 % de temps en moins, ≈ 1,23× ; qualité non comparée |
-| RIFE FP16, scale 0,5 | 10,38 s | ≈ 26,4 % de temps en moins que FP32 ; modifie le calcul, qualité non comparée |
-| Aperçus : 8 scans gris + 8 PNG | 5,48 s | Couverture initiale exclue |
-| Aperçus : 8 PNG seulement | 2,67 s | ≈ 51,3 % en moins ; calcul local de luminance à rajouter |
-| Détection de scènes sur la source 2 s | 0,502 s | Passe complète actuellement non utilisée pour le calcul RIFE |
-| FFmpeg x264 medium, CRF 18 | 5,03 s | Vidéo seule, source 120 FPS ; fichier ≈ 11,89 Mo |
-| FFmpeg x264 fast, CRF 18 | 4,12 s | ≈ 18,1 % en moins ; fichier ≈ 12,19 Mo |
-| FFmpeg NVENC p5, CQ 18 | 1,20 s | ≈ 76,1 % en moins ; fichier ≈ 22,93 Mo ; qualité non équivalente au CRF 18 |
-| Smoothie x264, filtres de référence | 2,98 s | Blending 30 FPS, intensité 1, audio AAC et scale de la recette |
-| Smoothie NVENC, mêmes filtres/audio | 1,98 s | ≈ 33,6 % en moins ; qualité visuelle non comparée |
+| RIFE FP32, scale 1 | 14.11 s | Baseline; 48 frames at 1680 × 1050, ×2 |
+| RIFE FP16, scale 1 | 11.50 s | ≈ 18.5% less time, ≈ 1.23×; quality not compared |
+| RIFE FP16, scale 0.5 | 10.38 s | ≈ 26.4% less time than FP32; changes computation, quality not compared |
+| Previews: 8 grayscale scans + 8 PNGs | 5.48 s | Initial cover image excluded |
+| Previews: 8 PNGs only | 2.67 s | ≈ 51.3% less; local luminance calculation still to be added |
+| Scene detection on the 2 s source | 0.502 s | Full pass currently unused for RIFE computation |
+| FFmpeg x264 medium, CRF 18 | 5.03 s | Video only, 120 FPS source; file ≈ 11.89 MB |
+| FFmpeg x264 fast, CRF 18 | 4.12 s | ≈ 18.1% less; file ≈ 12.19 MB |
+| FFmpeg NVENC p5, CQ 18 | 1.20 s | ≈ 76.1% less; file ≈ 22.93 MB; quality not equivalent to CRF 18 |
+| Smoothie x264, reference filters | 2.98 s | 30 FPS blending, intensity 1, AAC audio, and recipe scaling |
+| Smoothie NVENC, same filters/audio | 1.98 s | ≈ 33.6% less; visual quality not compared |
 
-Les premières mesures `smoothie_baseline`/`smoothie_nvenc` du JSON principal n'utilisent pas la même mise à l'échelle : **elles sont exclues de la comparaison de vitesse**. Les mesures `*_matched` de `AUDIT-PREUVES.json` conservent les mêmes filtres et paramètres audio ; seul l'encodeur change. Les chiffres et limites de cette comparaison sont ajoutés dans la section complémentaire ci-dessous.
+The initial `smoothie_baseline`/`smoothie_nvenc` measurements in the main JSON do not use the same scaling: **they are excluded from the speed comparison**. The `*_matched` measurements in `AUDIT-PREUVES.json` retain the same filters and audio settings; only the encoder changes. The figures and limitations of this comparison are included in the supplementary section below.
 
-## Optimisations recommandées, reliées aux défauts qualité
+## Recommended optimizations linked to code quality issues
 
-### F1 — Priorité haute, effort faible : supprimer la passe scène inutilisée
+### F1 — High priority, low effort: remove the unused scene pass
 
-Le scan de scène décode toute la vidéo avant de démarrer RIFE et stocke les logs en mémoire. Les timestamps ne sont pas utilisés. Le moteur RIFE possède déjà une logique de similarité/coupure interne, indépendante du seuil affiché.
+The scene scan decodes the entire video before starting RIFE and stores logs in memory. The timestamps are not used. The RIFE engine already has internal similarity/cut logic, independent of the displayed threshold.
 
-Retirer cette passe tant que les options ne sont pas implémentées, ou intégrer le besoin au décodage/inférence existant. Cela réduit le temps avant la première image sans modifier le calcul RIFE actuellement effectué. Pour ce clip : ≈ 0,5 s par job. Le chronomètre Python démarre **après** ce scan ; le temps annoncé omet donc son coût.
+Remove this pass until the options are implemented, or incorporate the requirement into existing decoding/inference. This reduces the time before the first frame without changing the RIFE computation currently performed. For this clip: ≈ 0.5 s per job. The Python timer starts **after** this scan, so the reported time omits its cost.
 
-### F2 — Priorité haute, effort moyen : décoder chaque aperçu une seule fois
+### F2 — High priority, medium effort: decode each preview only once
 
-L'import actuel peut lancer 1 FFmpeg pour la couverture, 8 pour la luminance et 8 pour les PNG. Calculer la luminance à partir de l'image déjà extraite réduit les recherches et démarrages. Mettre en cache les résultats (chemin canonique + taille + modification + options), réutiliser les images identiques et annuler les anciennes sélections.
+The current import can launch 1 FFmpeg for the cover, 8 for luminance, and 8 for PNGs. Calculating luminance from the image already extracted reduces seeks and startups. Cache results (canonical path + size + modification + options), reuse identical images, and cancel old selections.
 
-Le prototype de mesure passe de 5,48 à 2,67 s pour les 16→8 appels, sans encore chiffrer le calcul gris local. La priorité de rendu doit passer avant les aperçus facultatifs. Limiter la concurrence FFmpeg : lancer tous les scans en parallèle peut augmenter RAM et contention disque/CPU.
+The measurement prototype drops from 5.48 to 2.67 s for the reduction from 16 to 8 calls, without yet measuring local grayscale calculation. Rendering must take priority over optional previews. Limit FFmpeg concurrency: launching every scan in parallel can increase RAM use and disk/CPU contention.
 
-### F3 — Priorité haute, effort moyen : ajouter un profil FP16 validé
+### F3 — High priority, medium effort: add a validated FP16 profile
 
-RIFE expose `--fp16`, mais l'application ne le transmet pas. Sur la RTX 3050 testée, la variante FP16 garde les mêmes dimensions et le même nombre d'images et réduit le temps de 18,5 %. Proposer FP32/FP16 ou un choix automatique testé, avec fallback et validation de compatibilité.
+RIFE exposes `--fp16`, but the application does not pass it. On the tested RTX 3050, the FP16 variant keeps the same dimensions and frame count and reduces time by 18.5%. Offer FP32/FP16 or a tested automatic choice, with fallback and compatibility validation.
 
-Ne pas promettre une identité visuelle : évaluer les mouvements rapides, textures fines, contours, occlusions et fondus. `scale=0.5` conserve les dimensions finales mais change l'estimation du mouvement ; en faire un profil distinct, pas un réglage invisible. Le projet [Practical-RIFE](https://github.com/hzwer/Practical-RIFE/blob/main/README.md) documente l'option de scale pour les hautes résolutions.
+Do not promise visual identity: assess fast motion, fine textures, edges, occlusions, and fades. `scale=0.5` preserves final dimensions but changes motion estimation; make it a distinct profile rather than an invisible setting. The [Practical-RIFE](https://github.com/hzwer/Practical-RIFE/blob/main/README.md) project documents the scale option for high resolutions.
 
-### F4 — Priorité haute, effort moyen : rendre l'encodeur configurable
+### F4 — High priority, medium effort: make the encoder configurable
 
-RIFE impose `libx264` ; la recette Smoothie locale aussi. Proposer un profil CPU et un profil NVENC, avec contrôle de disponibilité, paramètres spécifiques et fallback explicite. Mesurer temps, bitrate et qualité à objectifs comparables : CRF 18 et CQ 18 n'ont pas la même signification.
+RIFE forces `libx264`; so does the local Smoothie recipe. Offer a CPU profile and an NVENC profile, with availability checks, specific parameters, and explicit fallback. Measure time, bitrate, and quality at comparable targets: CRF 18 and CQ 18 do not mean the same thing.
 
-La réduction mesurée concerne l'encodage, pas toute l'interpolation. Un gain GPU d'encodage peut aussi changer la contention avec l'inférence si les étapes sont pipelinées. Le guide officiel [NVIDIA FFmpeg](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/ffmpeg-with-nvidia-gpu/index.html) décrit les voies NVENC/NVDEC ; leur présence dans `-encoders` seule ne suffit pas, les essais d'encodage ont ici réussi.
+The measured reduction concerns encoding, not the entire interpolation. A GPU encoding gain can also change contention with inference if stages are pipelined. The official [NVIDIA FFmpeg](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/ffmpeg-with-nvidia-gpu/index.html) guide describes the NVENC/NVDEC paths; their presence in `-encoders` alone is insufficient, whereas the encoding trials here succeeded.
 
-### F5 — Priorité haute pour stabilité, effort moyen : borner les buffers RIFE par mémoire
+### F5 — High priority for stability, medium effort: bound RIFE buffers by memory
 
-`inference_video.py:198–199` crée deux queues de 500 images RGB. À 1920 × 1080, 1000 images représentent environ **5,8 Gio** ; à 3840 × 2160, environ **23,2 Gio**, hors tenseurs et autres allocations. Ce sont des plafonds théoriques si les queues se remplissent, pas des pics observés.
+`inference_video.py:198–199` creates two queues of 500 RGB frames. At 1920 × 1080, 1000 frames represent approximately **5.8 GiB**; at 3840 × 2160, approximately **23.2 GiB**, excluding tensors and other allocations. These are theoretical limits if the queues fill, not observed peaks.
 
-Dimensionner les queues selon résolution et budget mémoire, par exemple quelques images pour la 4K, puis profiler débit et RAM. Des queues plus grandes ne rendent pas automatiquement un GPU plus rapide. Conserver une petite avance de décodage/écriture pour éviter de le laisser attendre ; vérifier le débit après réduction.
+Size the queues according to resolution and memory budget, for example a few frames for 4K, then profile throughput and RAM. Larger queues do not automatically make a GPU faster. Retain a small decoding/writing lead to avoid making it wait; verify throughput after reducing buffers.
 
-### F6 — Fort potentiel, effort élevé : supprimer les encodages intermédiaires inutiles
+### F6 — High potential, high effort: remove unnecessary intermediate encodes
 
 ```mermaid
 flowchart LR
-    A[Source] --> B[Décodage RIFE]
-    B --> C[Inférence CUDA]
-    C --> D[MP4 intermédiaire MPEG-4]
-    D --> E[Décodage FFmpeg]
-    E --> F[MP4 H.264 interpolé]
-    F --> G[Décodage Smoothie]
+    A[Source] --> B[RIFE decoding]
+    B --> C[CUDA inference]
+    C --> D[Intermediate MPEG-4 MP4]
+    D --> E[FFmpeg decoding]
+    E --> F[Interpolated H.264 MP4]
+    F --> G[Smoothie decoding]
     G --> H[Frame blending]
-    H --> I[Encodage final]
+    H --> I[Final encoding]
 ```
 
-Le fichier nommé « raw » est un MP4 MPEG-4 compressé (`mp4v`), confirmé par FFprobe. L'auto-chain ajoute un encodage H.264 puis un nouveau décodage avant Smoothie. Cela consomme CPU/disque et applique plusieurs compressions avec perte.
+The file named "raw" is a compressed MPEG-4 MP4 (`mp4v`), confirmed by FFprobe. Automatic chaining adds an H.264 encode and then another decode before Smoothie. This consumes CPU/disk resources and applies multiple lossy compressions.
 
-Étape pragmatique : conserver un intermédiaire unique explicitement choisi pour Smoothie et ne pas produire un H.264 de livraison dont on n'a pas besoin. Garder un mode qui conserve un résultat RIFE exploitable en cas d'échec Smoothie.
+Pragmatic step: keep a single intermediate explicitly chosen for Smoothie and avoid producing an unneeded delivery H.264. Retain a mode that preserves a usable RIFE result if Smoothie fails.
 
-Étape plus ambitieuse : transmettre les frames à l'encodeur final ou à un moteur de blending via pipe, ou intégrer RIFE à une chaîne VapourSynth compatible. Un pipe RGB brut en 1080p240 représente environ **1,49 Go/s** (≈ 5,97 Go/s en 4K240) ; supprimer un MP4 sans maîtriser les copies peut déplacer le goulot plutôt que l'éliminer. Prévoir backpressure, annulation, formats couleur et synchronisation audio. Aucun gain chiffré n'est revendiqué avant prototype.
+More ambitious step: pass frames to the final encoder or a blending engine through a pipe, or integrate RIFE into a compatible VapourSynth pipeline. A raw RGB pipe at 1080p240 represents approximately **1.49 GB/s** (≈ 5.97 GB/s at 4K240); removing an MP4 without controlling copies can move the bottleneck rather than eliminate it. Plan for backpressure, cancellation, color formats, and audio synchronization. No quantified gain is claimed before a prototype.
 
-### F7 — Priorité moyenne : limiter les copies et synchronisations GPU
+### F7 — Medium priority: limit GPU copies and synchronization
 
-Chaque image fait un transfert CPU→GPU, puis chaque résultat revient via `.cpu().numpy()`. Les tests SSIM dans des conditions Python et ces retours peuvent introduire des points de synchronisation. Profiler avant modification ; essayer buffers réutilisés, transfert par groupes et streams CUDA lorsque cela conserve les dépendances temporelles.
+Each frame is transferred from CPU to GPU, then each result returns through `.cpu().numpy()`. SSIM checks in Python conditions and these transfers can introduce synchronization points. Profile before modifying; try reused buffers, grouped transfers, and CUDA streams where temporal dependencies are preserved.
 
-`non_blocking=True` est déjà présent, mais ne prouve pas un chevauchement effectif. Le guide [PyTorch sur les transferts](https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html) expose les conditions et les coûts possibles de la mémoire épinglée ; éviter de rajouter `pin_memory()` à chaque frame sans mesurer.
+`non_blocking=True` is already present, but does not prove actual overlap. The [PyTorch transfer guide](https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html) explains the conditions and possible costs of pinned memory; avoid adding `pin_memory()` to every frame without measuring.
 
-### F8 — Priorité moyenne : worker RIFE persistant et inference_mode
+### F8 — Medium priority: persistent RIFE worker and inference_mode
 
-Lancer Python, charger les imports CUDA et le modèle à chaque fichier pénalise les clips courts. Un worker persistant pourrait amortir ces coûts, avec reset explicite de l'état entre jobs et libération du GPU au repos. Le mesurer sur une série de clips, pas seulement sur une vidéo longue.
+Launching Python and loading CUDA imports and the model for each file penalizes short clips. A persistent worker could amortize these costs, with an explicit state reset between jobs and GPU release when idle. Measure it on a series of clips, not only on one long video.
 
-RIFE désactive déjà les gradients et active cuDNN benchmark : inutile de présenter ces options comme nouvelles optimisations. Tester `torch.inference_mode()` à la place du no-grad global dans un chemin dédié, en contrôlant compatibilité et résultat. La documentation [PyTorch inference_mode](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad_mode.inference_mode.html) décrit la suppression de coûts supplémentaires de suivi ; le gain ici n'est pas mesuré.
+RIFE already disables gradients and enables cuDNN benchmark: these options should not be presented as new optimizations. Test `torch.inference_mode()` in place of global no-grad in a dedicated path, checking compatibility and results. The [PyTorch inference_mode](https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad_mode.inference_mode.html) documentation describes the removal of additional tracking overhead; the gain here has not been measured.
 
-`torch.compile`/TensorRT restent des pistes ultérieures : coût de compilation, compatibilité du warp/modèle, formes variables, packaging Windows et bénéfice sur ce GPU doivent être démontrés. Pas de migration moteur précipitée avant d'éliminer les passes redondantes.
+`torch.compile`/TensorRT remain later possibilities: compilation cost, warp/model compatibility, variable shapes, Windows packaging, and benefits on this GPU must be demonstrated. Avoid rushing an engine migration before eliminating redundant passes.
 
-### F9 — Priorité basse à moyenne : réduire le travail de l'interface
+### F9 — Low to medium priority: reduce interface work
 
-`GlowSlider.svelte:47` programme des frames d'animation sans arrêt après convergence, et `appendLog` reconstruit jusqu'à 500 lignes à chaque événement. Arrêter les animations immobiles, regrouper l'affichage des logs et publier une progression typée à fréquence bornée. Ne pas tronquer les erreurs utiles.
+`GlowSlider.svelte:47` schedules animation frames indefinitely after convergence, and `appendLog` rebuilds up to 500 lines for every event. Stop stationary animations, batch log display updates, and publish typed progress at a bounded frequency. Do not truncate useful errors.
 
-Le JS de production est déjà raisonnable. Ces changements améliorent consommation et fluidité ; ils ont moins de chances de raccourcir fortement une inférence GPU que F1–F6.
+Production JS size is already reasonable. These changes improve resource consumption and responsiveness; they are less likely to substantially shorten GPU inference than F1–F6.
 
-## Ordre de mise en œuvre conseillé
+## Recommended implementation order
 
-| Lot | Contenu | Condition de réussite |
+| Batch | Contents | Success condition |
 | --- | --- | --- |
-| 1 — Fiabilité | Q1/Q2/Q3, validation d'entrée, writer joint, ownership des sorties | Navigation/fermeture/annulation sans jobs orphelins ni écrasement ; préexistants conservés |
-| 2 — Fidélité | Ratio vidéo, recette/LUT/modèle effectifs, couleur et options scène cohérentes, aperçu final | Paramètres observables dans le résultat et tests sur les formats annoncés |
-| 3 — Gains mesurables | F1/F2/F3/F4/F5, instrumentation par étape | Temps total et par phase comparés ; RAM/VRAM bornées ; aucune régression de contenu |
-| 4 — Architecture | F6/F7/F8, stores/modules, événements typés | Gains confirmés sur corpus varié, démarrage court et longues vidéos |
+| 1 — Reliability | Q1/Q2/Q3, input validation, joined writer, output ownership | Navigation/closure/cancellation without orphaned jobs or overwrites; existing files preserved |
+| 2 — Consistency | Video aspect ratio, effective recipe/LUT/model, coherent color and scene options, final preview | Settings observable in the result and tests for advertised formats |
+| 3 — Measurable gains | F1/F2/F3/F4/F5, per-stage instrumentation | Total and per-phase times compared; bounded RAM/VRAM; no content regression |
+| 4 — Architecture | F6/F7/F8, stores/modules, typed events | Gains confirmed on a varied corpus, short startup, and long videos |
 
-Pour chaque lot : clips courts et longs, 720p/1080p/4K, différentes cadences, mouvements difficiles, audio et sous-titres, plus annulation et espace disque insuffisant. Mesurer durée murale, démarrage, FPS de chaque étape, pics CPU/RAM/VRAM, I/O, taille et intégrité du résultat. Les variantes de précision/encodeur nécessitent également une comparaison visuelle ; PSNR/SSIM seuls ne suffisent pas à valider les artefacts d'interpolation.
+For each batch: short and long clips, 720p/1080p/4K, different frame rates, difficult motion, audio and subtitles, plus cancellation and insufficient disk space. Measure wall time, startup, each stage's FPS, peak CPU/RAM/VRAM, I/O, output size, and integrity. Precision/encoder variants also require visual comparison; PSNR/SSIM alone are insufficient to validate interpolation artifacts.
 
-## Mesures Smoothie complémentaires
+## Supplementary Smoothie measurements
 
-Voir `matched_smoothie_measurements` dans [AUDIT-PREUVES.json](AUDIT-PREUVES.json) pour les répétitions, tailles, dimensions, streams et durées. Ces mesures conservent le filtre de scale de la recette afin d'isoler l'encodeur ; cela ne valide pas ce choix de ratio pour le produit.
+See `matched_smoothie_measurements` in [AUDIT-PREUVES.json](AUDIT-PREUVES.json) for repetitions, sizes, dimensions, streams, and durations. These measurements retain the recipe's scale filter to isolate the encoder; this does not validate that aspect ratio choice for the product.
 
-Sur trois répétitions : x264 **2,978 s** contre NVENC **1,978 s**, soit **33,6 % de temps en moins**. Les deux variantes produisent 60 frames à 30 FPS, 1920 × 1080, avec audio et une durée conteneur de 2,005 s. Tailles : environ 6,91 Mo contre 5,07 Mo. Ce résultat n'établit pas une égalité de qualité entre CRF 18 et CQ 18.
+Across three repetitions: x264 **2.978 s** versus NVENC **1.978 s**, or **33.6% less time**. Both variants produce 60 frames at 30 FPS, 1920 × 1080, with audio and a container duration of 2.005 s. Sizes: approximately 6.91 MB versus 5.07 MB. This result does not establish equal quality between CRF 18 and CQ 18.
 
-La vérification de recette montre également `brightness/saturation/contrast = 1.5` avec `color grading.enabled = no` : les valeurs changent, mais la section reste désactivée. La reproduction d'historique retourne `isSmoothieProcessing = false` après navigation, alors que son état initial était vrai et qu'aucune commande d'arrêt n'a été appelée.
+Recipe verification also shows `brightness/saturation/contrast = 1.5` with `color grading.enabled = no`: the values change, but the section remains disabled. The history reproduction returns `isSmoothieProcessing = false` after navigation, although its initial state was true and no stop command was called.

@@ -385,3 +385,22 @@ test('standalone render freezes playback speed and uses retimed duration for pro
   const preview = calls.find(call => call.command === 'generate_video_preview_frame');
   assert.equal(preview.args.timestamp, media.duration / 0.8 * 0.12);
 });
+
+test('RIFE installation keeps the complete diagnostic and clears it when retry succeeds', async () => {
+  const detail = 'RIFE environment installation failed: Python package is incomplete at C:/a long path/python/python.exe';
+  let attempts = 0;
+  const { ctx, notices } = makeContext({
+    rifeInstallError: '',
+    invoke: () => ++attempts === 1
+      ? Promise.reject(detail)
+      : Promise.resolve({ config: { rife: {} }, rifeReady: true })
+  });
+  await ctx.installRifeEnvironment();
+  assert.equal(ctx.rifeInstallError, detail);
+  assert.equal(notices.at(-1).message, detail);
+  assert.equal(ctx.isInstallingRifeEnvironment, false);
+  await ctx.installRifeEnvironment();
+  assert.equal(ctx.rifeInstallError, '');
+  assert.equal(ctx.runtimeSnapshot.rifeReady, true);
+  assert.equal(notices.at(-1).type, 'success');
+});

@@ -12,12 +12,10 @@ VERSION = json.loads((UI/'src-tauri/tauri.conf.json').read_text())['version']
 KIT = UI/'src-tauri/target'/f'release-kit-v{VERSION}'
 RUNTIME = KIT/'runtime'
 ARCHIVE = KIT/'smoothie-rs-nightly.zip'
-PYTHON_INSTALLER = UI/'src-tauri/resources/bootstrap/python-3.11.9-amd64.exe'
 TAG = 'Nightly_2025.11.30_14-36'
 COMMIT = '3da73de9df0c991801c4f8474b320445fb25a208'
 
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
-assert sha(PYTHON_INSTALLER) == '5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde'
 assert sha(ARCHIVE) == 'a9e49e8638c0c1db90a86d4ddb4e5eae0681e773c5bd9177caab8eb5586c4a07'
 assert RUNTIME.resolve().is_relative_to((UI/'src-tauri/target').resolve()) and RUNTIME.name == 'runtime'
 if RUNTIME.exists(): shutil.rmtree(RUNTIME)
@@ -79,8 +77,8 @@ files = {str(path.relative_to(RUNTIME)).replace('\\','/'): {'bytes':path.stat().
 assert not any(Path(name).suffix.lower() in {'.cube','.mp4','.mkv','.pkl','.pt','.onnx'} or Path(name).name in {'last_args.txt','config.json'} for name in files)
 for name in ('smoothie/recipe.ini','smoothie/defaults.ini'):
  text=(RUNTIME/name).read_text(); assert 'C:/Users/' not in text and 'C:\\Users\\' not in text
-manifest = {'version':VERSION,'smoothie_release':TAG,'smoothie_source_commit':COMMIT,'archive_sha256':sha(ARCHIVE),'ffmpeg_version':'8.1.1-essentials_build-www.gyan.dev','ffmpeg_build':ffmpeg_build,'vapoursynth_version':'R70','python_installer_sha256':sha(PYTHON_INSTALLER),'files':files}
+manifest = {'version':VERSION,'smoothie_release':TAG,'smoothie_source_commit':COMMIT,'archive_sha256':sha(ARCHIVE),'ffmpeg_version':'8.1.1-essentials_build-www.gyan.dev','ffmpeg_build':ffmpeg_build,'vapoursynth_version':'R70','python_package_url':'https://api.nuget.org/v3-flatcontainer/python/3.11.9/python.3.11.9.nupkg','python_package_sha256':'9283876d58c017e0e846f95b490da3bca0fc0a6ee1134b2870677cfb7eec3c67','files':files}
 (KIT/'RELEASE-PAYLOAD.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
-resources = {f'target/release-kit-v{VERSION}/runtime':'resources/runtime', 'resources/time_remap.py':'resources/time_remap.py','resources/rife_worker.py':'resources/rife_worker.py','resources/bootstrap/bootstrap-rife.ps1':'resources/bootstrap/bootstrap-rife.ps1','resources/bootstrap/python-3.11.9-amd64.exe':'resources/bootstrap/python-3.11.9-amd64.exe','../THIRD_PARTY_NOTICES.md':'resources/THIRD_PARTY_NOTICES.md', f'target/release-kit-v{VERSION}/RELEASE-PAYLOAD.json':'resources/RELEASE-PAYLOAD.json'}
+resources = {f'target/release-kit-v{VERSION}/runtime':'resources/runtime', 'resources/time_remap.py':'resources/time_remap.py','resources/rife_worker.py':'resources/rife_worker.py','resources/bootstrap/bootstrap-rife.ps1':'resources/bootstrap/bootstrap-rife.ps1','resources/bootstrap/bootstrap-python.ps1':'resources/bootstrap/bootstrap-python.ps1','../THIRD_PARTY_NOTICES.md':'resources/THIRD_PARTY_NOTICES.md', f'target/release-kit-v{VERSION}/RELEASE-PAYLOAD.json':'resources/RELEASE-PAYLOAD.json'}
 (KIT/'build.json').write_text(json.dumps({'build':{'beforeBuildCommand':'node node_modules/vite/bin/vite.js build'},'bundle':{'resources':resources}},indent=2),encoding='utf-8')
 print(f'Prepared {len(files)} clean runtime files; no binary changes versus tested installation.')
