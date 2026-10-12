@@ -42,9 +42,9 @@ extra downloads.
 first use. It requires a CUDA-capable NVIDIA GPU. See
 [Install and first launch](docs/INSTALL.md) for details.
 
-The main branch includes the [RIFE installation fix](docs/CORRECTION-INSTALLATION-RIFE.md).
-It requires a new installer; the published v1.2.5 installer retains its original
-installation behaviour.
+[v1.2.6](https://github.com/cia213/cia-app/releases/tag/v1.2.6) includes the
+[RIFE installation fix](docs/CORRECTION-INSTALLATION-RIFE.md). If INSTALL ENVIRONMENT
+fails in v1.2.5, update to v1.2.6 and retry the installation.
 
 ## Build from source
 

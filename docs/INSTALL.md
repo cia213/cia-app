@@ -18,12 +18,13 @@ installations, registry entries, file associations, and the user `PATH` are not
 changed. An incomplete private installation is replaced only after the new copy
 has been verified. The package's PSF licence is retained.
 
-The published v1.2.5 installer still uses the previous official Python Windows
-installer, which can fail to create the private directory when Python is already
-installed. See the [RIFE installation fix](CORRECTION-INSTALLATION-RIFE.md).
+v1.2.6 includes the fixed bootstrap. Versions up to v1.2.5 used the official
+Python Windows installer, which could fail to create the private directory when
+Python was already installed. Update to v1.2.6 and retry INSTALL ENVIRONMENT.
+See the [RIFE installation fix](CORRECTION-INSTALLATION-RIFE.md).
 
 When installation fails, the full diagnostic stays visible on the interpolation
-page. **COPY LOG** provides the details needed to identify the failed stage and
+page. **COPY LOGS** provides the details needed to identify the failed stage and
 retry installation.
 
 The **ABOUT → ADVANCED RUNTIME PATHS** repair panel is an advanced settings tool. It can point cia render

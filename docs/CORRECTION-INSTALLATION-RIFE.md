@@ -48,10 +48,16 @@ progress markers, software names, and original licence texts are preserved.
 - Rust and UI tests cover the complete structured diagnostic despite extra
   PowerShell lines, absence of a duplicated prefix, and a successful retry
   clearing the persistent error. Build and static analysis were verified.
-- A browser check at 920×540 covered the temporary French About page and RIFE
-  panel without horizontal button overflow. That intermediate translation was
-  subsequently reverted to English; it is not validation of the final English UI.
+- The v1.2.6 installer was extracted and both bootstrap scripts matched the
+  tracked source byte for byte. Its packaged setup completed all seven stages
+  from an unrelated working directory, with spaces and accents in runtime paths.
+- The packaged setup repaired a deliberately broken virtual environment, then
+  its installed RIFE runtime completed a real 24 → 48 FPS interpolation render
+  with synchronized audio. The registered Python and user PATH were unchanged.
+- The English UI was checked in a browser with the Tauri boundary mocked. NSIS
+  installation and full GUI navigation on a fresh Windows user profile were not
+  tested; the packaged scripts were executed directly from the extracted installer.
 
-This fix belongs to the main branch source. Existing published installers,
-including v1.2.5, are unchanged. A new installer must be built and published to
-distribute the fix.
+The fix ships in [v1.2.6](https://github.com/cia213/cia-app/releases/tag/v1.2.6).
+The older v1.2.5 installer is unchanged. Users seeing this failure should update
+to v1.2.6 and retry INSTALL ENVIRONMENT.
