@@ -27,10 +27,6 @@ When installation fails, the full diagnostic stays visible on the interpolation
 page. **COPY LOGS** provides the details needed to identify the failed stage and
 retry installation.
 
-The **ABOUT → ADVANCED RUNTIME PATHS** repair panel is an advanced settings tool. It can point cia render
-to an existing RIFE installation if the optional installer is not the
-right fit. It is not part of the normal first-run flow.
-
 The bundled render tools are resolved from the installed application, and the
 RIFE installer saves only its per-user app-data paths. cia render never guesses
 a runtime path during an active render.

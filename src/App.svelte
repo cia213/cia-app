@@ -1897,7 +1897,6 @@
             </button>
           {/each}
         </div>
-        <button class="btn-pro-secondary" onclick={openRuntimeSetup} disabled={anyProcessing}>ADVANCED RUNTIME PATHS</button>
       </section>
     {/if}
       </div>
@@ -2050,13 +2049,13 @@
           <div class="settings-section">
             <h3>LUT &amp; DISPLAY</h3>
             <div class="setting-row settings-control">
-              <label for="mod-sm-lutenable" class="has-tooltip" data-tooltip="Enable the .cube LUT configured in advanced runtime paths.">LUT ENABLED</label>
+              <label for="mod-sm-lutenable" class="has-tooltip" data-tooltip="Enable the configured .cube LUT.">LUT ENABLED</label>
               <select id="mod-sm-lutenable" bind:value={smoothieSettings.lutEnabled} disabled={!hasConfiguredLut}>
                 <option value="yes">yes</option>
                 <option value="no">no</option>
               </select>
             </div>
-            {#if !hasConfiguredLut}<p class="settings-note">Configure a .cube LUT under ABOUT → ADVANCED RUNTIME PATHS to enable it.</p>{/if}
+            {#if !hasConfiguredLut}<p class="settings-note">A configured .cube LUT is required to enable this option.</p>{/if}
             <div class="slider-row settings-slider">
               <div class="slider-header"><span class="slider-label">LUT OPACITY:</span><span class="slider-val">{(smoothieSettings.lutOpacity * 100).toFixed(0)}%</span></div>
               <input type="range" min="0.0" max="1.0" step="0.05" bind:value={smoothieSettings.lutOpacity} class="custom-slider" />
