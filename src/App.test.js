@@ -10,6 +10,11 @@ const source = fs.readFileSync(new URL('./App.svelte', import.meta.url), 'utf8')
 const functions = parse(source).instance.content.body
   .filter(node => node.type === 'FunctionDeclaration')
   .map(node => source.slice(node.start, node.end)).join('\n');
+const derivedExpressions = Object.fromEntries(parse(source).instance.content.body
+  .filter(node => node.type === 'VariableDeclaration')
+  .flatMap(node => node.declarations)
+  .filter(node => node.init?.callee?.name === '$derived')
+  .map(node => [node.id.name, source.slice(node.init.arguments[0].start, node.init.arguments[0].end)]));
 const media = { width: 1680, height: 1050, fps: 120, duration: 2 };
 const rife = { mode: 'boost', factor: 2, crf: 18, preset: 'medium', precision: 'fp32', encoder: 'libx264' };
 const smoothie = { fps: 30, speed: 1, blendIntensity: 1, brightness: 1.1, saturation: 1.1, contrast: 1, lutEnabled: 'no', lutOpacity: 0.67, borderless: 'no', encoder: 'libx264' };
@@ -33,6 +38,14 @@ function makeContext(overrides = {}) {
     activePage: 'dashboard', activeJob: null, activeRenderJobId: '',
     isProcessing: false, isSmoothieProcessing: false,
     isLoading: false, isSmoothieLoading: false, isInstallingRifeEnvironment: false,
+    isRuntimeLoading: false, isRecoveringRuntime: false, isSavingRuntime: false,
+    isCancellingInstall: false, isPausePending: false,
+    runtimeError: '', preferencesWarning: '', rifeSettingsError: '', smoothieSettingsError: '',
+    rifeInstallError: '', rifeFailureLogs: '', smoothieFailureLogs: '', installFailureLogs: '',
+    rifeRecoveryNote: '', smoothieRecoveryNote: '',
+    updateState: 'idle', availableUpdate: null, updateErrorMessage: '',
+    installStep: 0, installTotal: 0, installLabel: '', setupDraft: null,
+    installDownloadedBytes: 0, installContentLength: 0, installDownloadLabel: '',
     isComplete: false, isSmoothieComplete: false,
     isRenderPaused: false, isCancellingRender: false,
     videoPath: '', smoothiePath: '', videoInfo: null, smoothieInfo: null,
@@ -53,7 +66,7 @@ function makeContext(overrides = {}) {
     elapsedTime: '00:00', remainingTime: '--:--', isEncodingPhase: false,
     encodingProgress: 0, encodingFrame: 0, encodingFps: '', encodingSpeed: '', encodingTime: '',
     autoRender: false, rifeSettings: { ...rife }, smoothieSettings: { ...smoothie },
-    runtimeSnapshot: { config: { smoothie: { lutFile: '' } } },
+    runtimeSnapshot: { config: { rife: {}, smoothie: { lutFile: '' }, ui: {} }, rifeReady: true, smoothieReady: true, mediaToolsReady: true },
     showRifeSettings: true, showSmoothieSettings: true,
     DEFAULT_RIFE: rife, DEFAULT_SMOOTHIE: smoothie,
     invoke: async (command, args) => {
@@ -64,8 +77,9 @@ function makeContext(overrides = {}) {
     ...overrides
   };
   Object.defineProperties(ctx, {
-    anyProcessing: { get: () => Boolean(ctx.activeJob || ctx.activeRenderJobId || ctx.isProcessing || ctx.isSmoothieProcessing) },
-    hasConfiguredLut: { get: () => Boolean(ctx.runtimeSnapshot?.config?.smoothie?.lutFile) },
+    anyProcessing: { get: () => vm.runInContext(derivedExpressions.anyProcessing, ctx) },
+    renderRuntimeReady: { get: () => vm.runInContext(derivedExpressions.renderRuntimeReady, ctx) },
+    hasConfiguredLut: { get: () => vm.runInContext(derivedExpressions.hasConfiguredLut, ctx) },
     canGoBack: { get: () => ctx.historyIndex > 0 },
     canGoForward: { get: () => ctx.historyIndex < ctx.historyStack.length - 1 },
     outputDuration: { get: () => ctx.activeJob?.kind === 'rife' ? ctx.activeJob.outputDuration : ctx.videoInfo?.duration || 0 }
@@ -403,4 +417,167 @@ test('RIFE installation keeps the complete diagnostic and clears it when retry s
   assert.equal(ctx.rifeInstallError, '');
   assert.equal(ctx.runtimeSnapshot.rifeReady, true);
   assert.equal(notices.at(-1).type, 'success');
+});
+
+test('environment setup prevents update installation and rendering until it ends', async () => {
+  const installing = deferred();
+  let updateCalled = false;
+  const { ctx, calls } = makeContext({
+    smoothiePath: 'A.mp4', smoothieInfo: media,
+    availableUpdate: { downloadAndInstall: async () => { updateCalled = true; } },
+    invoke: async command => command === 'install_rife_environment' ? installing.promise : null
+  });
+  const pending = ctx.installRifeEnvironment();
+  await ctx.installAppUpdate();
+  await ctx.startSmoothie();
+  assert.equal(updateCalled, false);
+  assert.equal(ctx.activeJob, null);
+  assert.equal(ctx.anyProcessing, true);
+  installing.resolve({ config: { rife: {}, smoothie: {} }, rifeReady: true });
+  await pending;
+  assert.equal(ctx.anyProcessing, false);
+  assert.equal(calls.length, 0);
+});
+
+test('native update admission blocks a new render and releases the gate on failure', async () => {
+  const downloading = deferred();
+  const commands = [];
+  const { ctx } = makeContext({
+    smoothiePath: 'A.mp4', smoothieInfo: media,
+    availableUpdate: { downloadAndInstall: () => downloading.promise },
+    invoke: async command => { commands.push(command); }
+  });
+  const pending = ctx.installAppUpdate();
+  await Promise.resolve();
+  await ctx.startSmoothie();
+  await ctx.installRifeEnvironment();
+  assert.equal(ctx.activeJob, null);
+  assert.deepEqual(commands, ['begin_app_update']);
+  downloading.reject(new Error('download interrupted'));
+  await pending;
+  assert.deepEqual(commands, ['begin_app_update', 'end_app_update']);
+  assert.equal(ctx.updateState, 'error');
+  assert.equal(ctx.anyProcessing, false);
+});
+
+test('duplicate pause clicks send one command and accept backend state', async () => {
+  const acknowledgement = deferred();
+  const commands = [];
+  const { ctx } = makeContext({
+    activeRenderJobId: 'job-1', jobPhase: 'rife',
+    invoke: (command, args) => { commands.push({ command, args }); return acknowledgement.promise; }
+  });
+  const first = ctx.toggleRenderPause();
+  await ctx.toggleRenderPause();
+  assert.equal(commands.length, 1);
+  assert.equal(ctx.isPausePending, true);
+  acknowledgement.resolve({ jobId: 'job-1', paused: true });
+  await first;
+  assert.equal(ctx.isRenderPaused, true);
+  assert.equal(ctx.isPausePending, false);
+});
+
+test('a delayed pause acknowledgement cannot pause the next pipeline stage', async () => {
+  const acknowledgement = deferred();
+  const { ctx } = makeContext({ activeRenderJobId: 'job-1', jobPhase: 'rife', invoke: () => acknowledgement.promise });
+  const pending = ctx.toggleRenderPause();
+  ctx.jobPhase = 'smoothie';
+  acknowledgement.resolve({ jobId: 'job-1', paused: true });
+  await pending;
+  assert.equal(ctx.isRenderPaused, false);
+});
+
+test('invalid speed is rejected before persistence and remains an inline field error', async () => {
+  const { ctx, calls, notices } = makeContext({ smoothieSettings: { ...smoothie, speed: 0 } });
+  await ctx.saveSmoothieSettings();
+  assert.equal(calls.length, 0);
+  assert.equal(ctx.showSmoothieSettings, true);
+  assert.match(ctx.smoothieSettingsError, /SPEED.*0.5.*2/);
+  assert.equal(notices.length, 0);
+});
+
+test('stored preferences migrate numeric strings and replace invalid fields safely', () => {
+  const { ctx } = makeContext();
+  const restored = ctx.sanitizeSettings('smoothie', { speed: 0, fps: '25', lutOpacity: null, encoder: 'unknown' });
+  assert.equal(restored.speed, smoothie.speed);
+  assert.equal(restored.fps, 25);
+  assert.equal(restored.lutOpacity, smoothie.lutOpacity);
+  assert.equal(restored.encoder, 'libx264');
+  assert.match(ctx.preferencesWarning, /invalid/);
+});
+
+test('runtime load failure keeps configuration recovery available and version resolves independently', async () => {
+  const loading = deferred();
+  const { ctx } = makeContext({
+    invoke: command => command === 'get_runtime_snapshot' ? loading.promise : Promise.resolve('1.3.0')
+  });
+  const initialization = ctx.initializeRuntime();
+  await ctx.initializeAppVersion();
+  assert.equal(ctx.appVersion, '1.3.0');
+  assert.equal(ctx.isRuntimeLoading, true);
+  loading.resolve({ config: { ui: { migrated: true } }, loadError: 'Invalid config.json' });
+  await initialization;
+  assert.equal(ctx.runtimeError, 'Invalid config.json');
+  assert.equal(ctx.renderRuntimeReady, false);
+  assert.equal(ctx.isRuntimeLoading, false);
+});
+
+test('setup cancellation targets the installer operation and waits for completion', async () => {
+  const installing = deferred();
+  const commands = [];
+  const { ctx } = makeContext({ invoke: (command, args) => {
+    commands.push({ command, args });
+    return command === 'install_rife_environment' ? installing.promise : Promise.resolve();
+  } });
+  const pending = ctx.installRifeEnvironment(true);
+  await ctx.cancelRifeInstallation();
+  assert.equal(commands[0].args.repair, true);
+  assert.equal(commands[1].command, 'cancel_render');
+  assert.equal(commands[1].args.jobId, 'install-rife');
+  assert.equal(ctx.isInstallingRifeEnvironment, true);
+  assert.equal(ctx.isCancellingInstall, true);
+  installing.reject('CIA_RENDER_CANCELLED');
+  await pending;
+  assert.equal(ctx.isInstallingRifeEnvironment, false);
+  assert.match(ctx.rifeInstallError, /cancelled/);
+});
+
+test('failure diagnostics survive restart and redact credentials', async () => {
+  const values = new Map();
+  const localStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  const { ctx } = makeContext({ localStorage });
+  ctx.appendLog('https://user:secret@example.test/private token=credential');
+  ctx.recordFailure('rife', 'CUDA failed');
+  const restored = makeContext({ localStorage }).ctx.loadFailure('rife');
+  assert.equal(restored.error, 'CUDA failed');
+  assert.match(restored.logs, /redacted/);
+  assert.doesNotMatch(restored.logs, /secret|credential/);
+});
+
+test('measured tail recovery is attached to the correct completion workflow', () => {
+  const { ctx } = makeContext({ activeJob: { kind: 'rife' } });
+  ctx.parseLogLine('[cia render] RECOVERED_TAIL frames=8 seconds=0.320000');
+  assert.equal(ctx.rifeRecoveryNote, 'Held the last valid frame for 0.32 s (8 frames).');
+  assert.equal(ctx.smoothieRecoveryNote, '');
+  ctx.activeJob = { kind: 'smoothie' };
+  ctx.parseLogLine('[cia render] RECOVERED_TAIL frames=3 seconds=0.120000');
+  assert.equal(ctx.smoothieRecoveryNote, 'Held the last valid frame for 0.12 s (3 frames).');
+});
+
+test('download events preserve setup phase and reset bytes only at a new stage', () => {
+  const { ctx } = makeContext({ isInstallingRifeEnvironment: true });
+  ctx.handleInstallProgress({ payload: { step: 2, total: 7, label: 'Preparing Python 3.11' } });
+  ctx.handleInstallProgress({ payload: { bytesDownloaded: 1024, bytesTotal: 4096, downloadLabel: 'Private Python' } });
+  assert.equal(ctx.installStep, 2);
+  assert.equal(ctx.installTotal, 7);
+  assert.equal(ctx.installLabel, 'Preparing Python 3.11');
+  assert.equal(ctx.installDownloadedBytes, 1024);
+  assert.equal(ctx.installContentLength, 4096);
+  ctx.handleInstallProgress({ payload: { step: 3, total: 7, label: 'Creating virtual environment' } });
+  assert.equal(ctx.installDownloadedBytes, 0);
+  assert.equal(ctx.installContentLength, 0);
+  assert.equal(ctx.installDownloadLabel, '');
+  ctx.isInstallingRifeEnvironment = false;
+  ctx.handleInstallProgress({ payload: { bytesDownloaded: 8192, bytesTotal: 16384 } });
+  assert.equal(ctx.installDownloadedBytes, 0);
 });

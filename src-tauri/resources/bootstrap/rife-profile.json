@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "profileId": "rife4.26-torch2.10-cu128-py311-win64-v1",
+  "pythonVersion": "3.11.9",
+  "minimumDriver": "570.65",
+  "minimumFreeBytes": 15032385536,
+  "supportedComputeCapabilities": [
+    [
+      7,
+      5
+    ],
+    [
+      8,
+      0
+    ],
+    [
+      8,
+      6
+    ],
+    [
+      8,
+      9
+    ],
+    [
+      9,
+      0
+    ],
+    [
+      10,
+      0
+    ],
+    [
+      12,
+      0
+    ]
+  ],
+  "packages": {
+    "filelock": "4.1.1",
+    "fsspec": "2026.9.0",
+    "Jinja2": "3.1.6",
+    "MarkupSafe": "3.0.4",
+    "mpmath": "1.3.0",
+    "networkx": "3.6.1",
+    "numpy": "1.26.4",
+    "pillow": "12.3.0",
+    "pip": "26.2.1",
+    "setuptools": "83.0.0",
+    "sympy": "1.14.0",
+    "torch": "2.10.0+cu128",
+    "torchvision": "0.25.0+cu128",
+    "typing_extensions": "4.16.0"
+  },
+  "wheels": [
+    {
+      "file": "filelock-4.1.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/d7/8b/f837f52905395ba4510fe61f753c24833fb0a9c76e21267bb9f828b664a9/filelock-4.1.1-py3-none-any.whl",
+      "sha256": "3f4a557945a7b0f95efeb1f432267affe5d45ac8ddde2aed1b97ebb62382c089",
+      "size": 132460
+    },
+    {
+      "file": "fsspec-2026.9.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
+      "size": 221738
+    },
+    {
+      "file": "jinja2-3.1.6-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "size": 134899
+    },
+    {
+      "file": "markupsafe-3.0.4-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/91/89/f2b509f7bf79352e40117824c1070dbeafd4df67031d3fa98165a3134228/markupsafe-3.0.4-cp311-cp311-win_amd64.whl",
+      "sha256": "fdb4ca07ab75ffadab4a8b135ad59cdbb3156b99310f3d565370da74a15d6bd3",
+      "size": 14328
+    },
+    {
+      "file": "mpmath-1.3.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl",
+      "sha256": "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c",
+      "size": 536198
+    },
+    {
+      "file": "networkx-3.6.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl",
+      "sha256": "d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762",
+      "size": 2068504
+    },
+    {
+      "file": "numpy-1.26.4-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/3f/6b/5610004206cf7f8e7ad91c5a85a8c71b2f2f8051a0c0c4d5916b76d6cbb2/numpy-1.26.4-cp311-cp311-win_amd64.whl",
+      "sha256": "cd25bcecc4974d09257ffcd1f098ee778f7834c3ad767fe5db785be9a4aa9cb2",
+      "size": 15811913
+    },
+    {
+      "file": "pillow-12.3.0-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/63/c6/4bad1b18d132a50b27e1365e1ab163616f7a5bb56d330f66f9d1d9d4f9d4/pillow-12.3.0-cp311-cp311-win_amd64.whl",
+      "sha256": "8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a",
+      "size": 7233653
+    },
+    {
+      "file": "pip-26.2.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl",
+      "sha256": "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e",
+      "size": 1816632
+    },
+    {
+      "file": "setuptools-83.0.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl",
+      "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3",
+      "size": 1008090
+    },
+    {
+      "file": "sympy-1.14.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+      "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
+      "size": 6299353
+    },
+    {
+      "file": "torch-2.10.0+cu128-cp311-cp311-win_amd64.whl",
+      "url": "https://download-r2.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp311-cp311-win_amd64.whl",
+      "sha256": "3523fda6e2cfab2b04ae09b1424681358e508bb3faa11ceb67004113d5e7acad",
+      "size": 2867372330
+    },
+    {
+      "file": "torchvision-0.25.0+cu128-cp311-cp311-win_amd64.whl",
+      "url": "https://download-r2.pytorch.org/whl/cu128/torchvision-0.25.0%2Bcu128-cp311-cp311-win_amd64.whl",
+      "sha256": "af00b4e0cdb3f490f4393e9a335b622fe1b92fd5afb181033256ccba03b9637c",
+      "size": 9367831
+    },
+    {
+      "file": "typing_extensions-4.16.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "size": 45571
+    }
+  ],
+  "projectFiles": {
+    "LICENSE": "7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd",
+    "inference_img.py": "01fa331801fa0526b5b8fb48c3437af394e91d8b497f00b2bd2a9cbd58d2ec0c",
+    "inference_img_SR.py": "ea9665047af7e2695477c19f523db7d9f6613bfb3c071682e4794e5a28da17cc",
+    "inference_video.py": "72070ee3a8f0f6878179c41a754748440e3dbf1614d3c923ef52f3030f68854c",
+    "inference_video_enhance.py": "57a46de41ddd54666b820109041468c18c95e846ba41dca72badf3ad8b78e9c7",
+    "model/loss.py": "9e4679cd685a37add8d8bb4a963b9822df0e1d344b82d01f975fc3426c8fc77a",
+    "model/pytorch_msssim/__init__.py": "220e4639c7dc0a4c22a50ade0f2fb51d0dac5d1fc9eedccfa4b25c16ae557425",
+    "model/warplayer.py": "eed94da2f2e8056fa0ceabed88b87fedf25ec849494991a956b9f2cbad33632c"
+  },
+  "modelFiles": {
+    "flownet.pkl": "45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f",
+    "IFNet_HDv3.py": "655b4c772b037967b86c2dd31c8fa3b5323b79dd9a0e0088708d89149bbc8a32",
+    "refine.py": "0c5698b4a05b9f6ab551740575c1c35e248e5b1829bab6445186081ebe15f032",
+    "RIFE_HDv3.py": "81bbd0648e499de79e44768d284005d9d57d0f6eb7c30adae407f22675055730"
+  },
+  "projectArchive": {
+    "file": "practical-rife.zip",
+    "url": "https://github.com/hzwer/Practical-RIFE/archive/17d8c7a1005b37f4c97bfee04e316aaec7fdc536.zip",
+    "size": 3027386,
+    "sha256": "b8e2eed1fd1d483e04886bc452c69b0f475cf35121e68381cc9af5d43b394a47"
+  },
+  "modelArchive": {
+    "file": "rife-4.26-model.zip",
+    "url": "https://drive.usercontent.google.com/download?id=1gViYvvQrtETBgU1w8axZSsr7YUuw31uy&export=download&confirm=t",
+    "size": 22867954,
+    "sha256": "c2452dd2b244947d4be580156bbead60d6b72af5736860f7d6b3f99648c9c4cc"
+  }
+}

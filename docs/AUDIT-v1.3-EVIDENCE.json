@@ -1,0 +1,518 @@
+{
+  "audit_date": "2026-10-14",
+  "baseline_version": "1.2.7",
+  "baseline_commit": "74b4a8786bc9f8bef88007ff9ffa58f24b450d60",
+  "scope": "Audit and v1.3 proposal; only tracked documentation added, ignored isolated fixtures/helpers created; no release or application fixes",
+  "finding_count": 24,
+  "priority_counts": {
+    "P1": 18,
+    "P2": 6
+  },
+  "existing_test_count_passed": 51,
+  "checks": [
+    {
+      "command": "npm test",
+      "status": "passed",
+      "tests": 21,
+      "boundary": "Actual component handlers, mocked IPC VM"
+    },
+    {
+      "command": "npm run build",
+      "status": "passed",
+      "boundary": "Production Svelte build"
+    },
+    {
+      "command": "python -m unittest discover -s tests -v",
+      "status": "passed",
+      "tests": 11
+    },
+    {
+      "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+      "status": "passed",
+      "tests": 17,
+      "initially_ignored": 2,
+      "configuration": "Tracked-resource-only TAURI_CONFIG from CI"
+    },
+    {
+      "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture",
+      "status": "passed",
+      "tests": 2,
+      "boundary": "Actual local bundled Smoothie/FFmpeg"
+    },
+    {
+      "command": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+      "status": "passed"
+    },
+    {
+      "command": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/test_bootstrap.ps1 -PackagePath <verified-cached-NuGet-package>",
+      "status": "passed",
+      "boundary": "Private Python only, not complete native installation"
+    },
+    {
+      "command": "python <local-v1.2.7-kit>/verify-payload.py",
+      "status": "passed",
+      "runtime_files": 1365,
+      "boundary": "Existing installer and extracted payload; not native installation"
+    }
+  ],
+  "source_sha256": {
+    "src/App.svelte": "7c7b80e2a78cdaa71e2f19a35a03552a52fbb97740ae93f15174e9bf90444ce1",
+    "src/App.test.js": "a2f1824ebca8d657be0480c5a0bd5dbc75ec3b391558c86a0402a63a20c696b8",
+    "src-tauri/src/lib.rs": "3288dc77dc19faec740be41e23cad8eb7c66635c0ce7b1d657ac69e5386dce7f",
+    "src-tauri/resources/time_remap.py": "16b839603428513d5325fc41fa1621fea9149b0e6baac3b3ac348185c4cb4c2b",
+    "src-tauri/resources/rife_worker.py": "f7b8e71d046124e0ff7a9d566a5bfa677a359b442e6d0d15563f1e399c4aeba7",
+    "src-tauri/resources/bootstrap/bootstrap-rife.ps1": "590f75366448adc42f90f83aede531b0ade2b61ffd382ca03ca0ad6d53dc1442",
+    "src-tauri/resources/bootstrap/bootstrap-python.ps1": "6c1b88d73329043e1188dd9eb69ba02897a133028abaef68bf60f62bbc3b113e",
+    "src-tauri/tauri.conf.json": "816ec149b860c2b4682f6612c2e77b17148f146717c7c8880ee72fbfe4614982",
+    "src-tauri/Cargo.lock": "8192b5cbe952c18a91e40fee06f7517aa7c3210df58bc4a6b8ece42f042112da",
+    "package-lock.json": "8175c537476d7dd7a30fe029dbf1d01010eb957718587ac472ba198c9791dd9d",
+    ".github/workflows/ci.yml": "21c8057960a3ce78cc651169f668fd188085c8fe278ed93c30cc7e479182a00b",
+    "scripts/prepare-release.py": "95e347747756e99114efadfaf378fb997d6e594c9770f8629353b7eb0e0ee00c"
+  },
+  "reproductions": [
+    {
+      "finding": "V13-01",
+      "boundary": "Original Rust resolvers extracted with AppHandle/resource stubs",
+      "runtime_resolver": "READY with eight empty files",
+      "interpreter_launch": "Windows error 193"
+    },
+    {
+      "finding": "V13-02",
+      "boundary": "Original PowerShell AST statements 105-140",
+      "source": "src-tauri/resources/bootstrap/bootstrap-rife.ps1",
+      "originalLines": "105-140",
+      "result": "Two retries reuse corrupt existing model; neither attempts download",
+      "attempts": [
+        {
+          "attempt": 1,
+          "downloadCalls": 0,
+          "error": "The downloaded RIFE model hash does not match the expected 4.26 model. Got 5DB6481EC517C755F82D7439D6A98DD3E39EF1AF0991041A6B7EF44388838B64"
+        },
+        {
+          "attempt": 2,
+          "downloadCalls": 0,
+          "error": "The downloaded RIFE model hash does not match the expected 4.26 model. Got 5DB6481EC517C755F82D7439D6A98DD3E39EF1AF0991041A6B7EF44388838B64"
+        }
+      ]
+    },
+    {
+      "finding": "V13-03",
+      "boundary": "Installed wheel inventory; no physical RTX 50 test",
+      "torch": "2.5.1+cu121",
+      "cuda_build": "12.1",
+      "compiled_architectures": [
+        "sm_50",
+        "sm_60",
+        "sm_61",
+        "sm_70",
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90"
+      ],
+      "cuda_available": true,
+      "device_name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+      "compute_capability": [
+        8,
+        6
+      ]
+    },
+    {
+      "finding": "V13-04",
+      "boundary": "Actual packaged Python/Torch child; controlled inherited variables",
+      "PYTHONHOME_exit": 1,
+      "isolated_exit": 0,
+      "PYTHONPATH_shadow_exit": 1,
+      "isolated_path_exit": 0
+    },
+    {
+      "finding": "V13-05",
+      "boundary": "Actual RIFE with forced CP1252 streams; not native fresh-machine GUI",
+      "encodings": "cp1252 cp1252",
+      "pipeline_returncode": 1,
+      "output_exists_despite_failure": true,
+      "error": "UnicodeEncodeError: CP1252 cannot encode characters in final success log"
+    },
+    {
+      "finding": "V13-06",
+      "boundary": "Actual RIFE/CUDA/FFmpeg on generated two-AAC-track MP4",
+      "exit": 0,
+      "input_audio_tracks": 2,
+      "output_audio_tracks": 1,
+      "output_video": {
+        "codec_type": "video",
+        "start_time": "0.000000",
+        "duration": "0.500000",
+        "avg_frame_rate": "48/1",
+        "nb_frames": "24"
+      }
+    },
+    {
+      "finding": "V13-07",
+      "boundary": "Actual RIFE/CUDA/FFmpeg on generated delayed-video MP4",
+      "input": {
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "2.000000",
+            "duration": "0.500000",
+            "avg_frame_rate": "24/1",
+            "nb_frames": "12"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "3.000000",
+            "avg_frame_rate": "0/0",
+            "nb_frames": "142"
+          }
+        ],
+        "format": {
+          "start_time": "0.000000",
+          "duration": "3.000000"
+        }
+      },
+      "exit": 1,
+      "worker_input_frames": 60,
+      "worker_output_frames": 120,
+      "error": "Decoded frame count differs from the complete CFR source"
+    },
+    {
+      "findings": [
+        "V13-08",
+        "V13-09",
+        "V13-10",
+        "V13-11"
+      ],
+      "version": "1.2.7",
+      "scope": "Compiled Svelte in headless Edge at 920x540 with mocked Tauri IPC. No native installer was invoked.",
+      "updateAndRelaunchEnabledDuringRifeInstall": true,
+      "startupConfigLoadErrorNotDisplayed": true,
+      "noInstallationCancelAction": true,
+      "rifeFailureDiagnosticDisappearsAfterToast": true,
+      "noCopyLogsAfterRifeRenderFailure": true,
+      "installStillPending": true,
+      "commands": [
+        "install_rife_environment",
+        "plugin:updater|download_and_install",
+        "plugin:process|restart"
+      ]
+    },
+    {
+      "findings": [
+        "V13-08",
+        "V13-10",
+        "V13-15",
+        "V13-16"
+      ],
+      "version": "1.2.7",
+      "scope": "Actual production handlers with the existing mocked Tauri test boundary; not a native GUI/installer test.",
+      "results": [
+        {
+          "case": "updater-during-rife-install",
+          "reproduced": true,
+          "updaterCalled": 1,
+          "relaunchedWhileInstallerPending": true
+        },
+        {
+          "case": "render-handler-during-update",
+          "reproduced": true,
+          "renderCommandReachedBackendWhileUpdatePending": true
+        },
+        {
+          "case": "rapid-double-pause",
+          "reproduced": true,
+          "commands": [
+            "pause_render",
+            "pause_render"
+          ],
+          "uiPaused": false,
+          "backendRemainsPausedWithIdempotentPause": true
+        },
+        {
+          "case": "runtime-snapshot-load-error",
+          "reproduced": true,
+          "diagnosticNotDisplayedByInitialization": true,
+          "recoveryPanelHidden": true
+        },
+        {
+          "case": "invalid-speed-saved",
+          "reproduced": true,
+          "savedSpeed": 0,
+          "announcedSaved": true,
+          "inputDeclaresMinSpeed": 0.5
+        }
+      ]
+    },
+    {
+      "finding": "V13-12",
+      "boundary": "Private pip nonmutating dry run with controlled PIP_NO_INDEX",
+      "inheritedSetting": "PIP_NO_INDEX=1",
+      "command": "Private Python -m pip install --dry-run --ignore-installed --no-deps numpy==1.23.5",
+      "exitCode": 1,
+      "output": [
+        "ERROR: Could not find a version that satisfies the requirement numpy==1.23.5 (from versions: none)",
+        "ERROR: No matching distribution found for numpy==1.23.5"
+      ]
+    },
+    {
+      "finding": "V13-13",
+      "boundary": "Exact FFmpeg output-stage filter, not full Smoothie/Tauri",
+      "real_input_frames": 1,
+      "real_input_duration": 0.04,
+      "output_frames": 50,
+      "output_fps": 25,
+      "output_duration": 2.0,
+      "cloned_frames": 49,
+      "all_decoded_hashes_identical": true
+    }
+  ],
+  "dependency_scans": {
+    "npm_all": {
+      "info": 0,
+      "low": 0,
+      "moderate": 3,
+      "high": 5,
+      "critical": 0,
+      "total": 8
+    },
+    "npm_production": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "npm_affected_entries": [
+      {
+        "name": "@sveltejs/vite-plugin-svelte",
+        "severity": "moderate"
+      },
+      {
+        "name": "@sveltejs/vite-plugin-svelte-inspector",
+        "severity": "moderate"
+      },
+      {
+        "name": "devalue",
+        "severity": "high"
+      },
+      {
+        "name": "esbuild",
+        "severity": "moderate"
+      },
+      {
+        "name": "nanoid",
+        "severity": "high"
+      },
+      {
+        "name": "postcss",
+        "severity": "high"
+      },
+      {
+        "name": "source-map-js",
+        "severity": "high"
+      },
+      {
+        "name": "vite",
+        "severity": "high"
+      }
+    ],
+    "cargo_audit_tool": "0.22.2",
+    "rustsec_database": {
+      "advisory-count": 1310,
+      "last-commit": "6aed84668c23d7f535077a9fe918bf1fa0f6a5bc",
+      "last-updated": "2026-10-13T17:07:33+02:00"
+    },
+    "rust_advisory_count": 3,
+    "rust_advisories": [
+      {
+        "id": "RUSTSEC-2026-0194",
+        "package": "quick-xml",
+        "version": "0.39.4",
+        "patched": [
+          ">=0.41.0"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0195",
+        "package": "quick-xml",
+        "version": "0.39.4",
+        "patched": [
+          ">=0.41.0"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0285",
+        "package": "rustls",
+        "version": "0.23.43",
+        "patched": [
+          ">=0.23.45"
+        ]
+      }
+    ],
+    "rust_warnings": {
+      "unmaintained": [
+        {
+          "id": "RUSTSEC-2024-0370",
+          "package": "proc-macro-error",
+          "version": "1.0.4"
+        },
+        {
+          "id": "RUSTSEC-2025-0081",
+          "package": "unic-char-property",
+          "version": "0.9.0"
+        },
+        {
+          "id": "RUSTSEC-2025-0075",
+          "package": "unic-char-range",
+          "version": "0.9.0"
+        },
+        {
+          "id": "RUSTSEC-2025-0080",
+          "package": "unic-common",
+          "version": "0.9.0"
+        },
+        {
+          "id": "RUSTSEC-2025-0100",
+          "package": "unic-ucd-ident",
+          "version": "0.9.0"
+        },
+        {
+          "id": "RUSTSEC-2025-0098",
+          "package": "unic-ucd-version",
+          "version": "0.9.0"
+        }
+      ],
+      "unsound": [
+        {
+          "id": "RUSTSEC-2026-0190",
+          "package": "anyhow",
+          "version": "1.0.102"
+        },
+        {
+          "id": "RUSTSEC-2026-0221",
+          "package": "event-listener",
+          "version": "5.4.1"
+        },
+        {
+          "id": "RUSTSEC-2024-0429",
+          "package": "glib",
+          "version": "0.18.5"
+        }
+      ]
+    },
+    "windows_tree_absent_warned_packages": [
+      "event-listener@5.4.1",
+      "glib@0.18.5"
+    ],
+    "qualification": "Lockfile/advisory matches, not demonstrated application exploits",
+    "python_installed_package_count": 29,
+    "python_exact_cuda_labels_skipped_by_pypi": true,
+    "python_base_version_lookup_is_separate": true,
+    "torch_loader_advisories": [
+      {
+        "id": "CVE-2025-32434",
+        "ghsa": "GHSA-53q9-r3pm-6pq6",
+        "affected": "<=2.5.1",
+        "patched": "2.6.0",
+        "primary_source": "https://github.com/pytorch/pytorch/security/advisories/GHSA-53q9-r3pm-6pq6"
+      },
+      {
+        "id": "CVE-2026-24747",
+        "ghsa": "GHSA-63cw-57p8-fm3p",
+        "affected": "<=2.9.1",
+        "patched": ">=2.10.0",
+        "primary_source": "https://github.com/pytorch/pytorch/security/advisories/GHSA-63cw-57p8-fm3p"
+      }
+    ],
+    "python_scan_limit": "Provider duplicates and unrelated APIs are not counted as demonstrated app vulnerabilities; no exploit executed"
+  },
+  "distribution": {
+    "installer_filename": "cia.render_1.2.7_x64-setup.exe",
+    "installer_sha256": "53b2741416d96640909a99462f22b76f9ae3bcce4b5cf42337669f517d55a9fb",
+    "runtime_files_verified": 1365,
+    "runtime_payload_bytes": 388779028,
+    "authenticode_status": "NotSigned",
+    "updater_signature_verified": true,
+    "webview2_mode": "downloadBootstrapper",
+    "fresh_native_install_tested": false
+  },
+  "raw_local_evidence": [
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/readiness-evidence.txt",
+      "sha256": "c83506ab4c344c9824580e0e0ebb3eb44b723cdcf5276a2a5a7bb59bcdac40f3"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/model-retry-evidence.json",
+      "sha256": "a6ce57a13c683659e73537f6a83e7252fe2d46893f4a808c2df3e396dcb4af20"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/gpu-build-evidence.json",
+      "sha256": "8468466dc428b62f1d474c326fb26596367947da0e60db2bd88fd73a69480f99"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/pip-isolation-evidence.json",
+      "sha256": "b83b9165a88519f2fd84a0376ec76932e67f9cd89f22a39027d18e1b04208235"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/product-handler-repros.json",
+      "sha256": "0cfeaa85ac85cf4ad404ca6e76cfe482303d424c0d447003adae0b329018f180"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/product-browser-repros.json",
+      "sha256": "a18518f7794ed7ba4f1d5ffdf901182a3ebcec188c6736fcf295859de8901623"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/pipeline/1791933312549093800/evidence.json",
+      "sha256": "b03d076510198db7d741562d65dcdd2ff8e6f842ea0180a397a43c476d452f9a"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/pipeline/tail-1791933570967508500/evidence.json",
+      "sha256": "06dc1b9d4e75d7bc94648b549e59b4f2aefdb43a8873a10e5cbee73872a6803e"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/npm-audit.json",
+      "sha256": "67cfe1c18d06cd8951b4b735753e8c665f66548b981eff37157401d49373a387"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/npm-audit-production.json",
+      "sha256": "ff1c2f36c8a8c2a2175a8439b1e6ec6ac6a5b46f9841869575098f3496cd68a1"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/cargo-audit.json",
+      "sha256": "bba9820f978c9678e685bd38300ca13af6bc97817057dd91079a29b5fad1cd27"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit/cargo-audit-windows.json",
+      "sha256": "657aa218cd6e57b3b8d90319fe357a7450747d505b4f062361f8ee4f21af1fc0"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/rife-package-inventory.json",
+      "sha256": "c0320a0e2366580b40cc681e6f335dc230d1c06f7711c98db22850b46b6f0388"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/rife-pip-audit.json",
+      "sha256": "4b3a0a46e13358cba6843203085ec8e10c71e1ae39a0863b9a9b5a7065ea7fd3"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/rife-base-version-pip-audit.json",
+      "sha256": "406aec5843280005ebee762a0dcfee8fe44798b9701b865fdd94178b0132b34c"
+    },
+    {
+      "path": "src-tauri/target/v1.3-audit-portability/managed-model-integrity.json",
+      "sha256": "3af52b1188d91bfe929edae659dbb056743d1ea288cb76198d7ba57f39be5390"
+    }
+  ],
+  "limits": [
+    "One developer RTX 3050 environment only",
+    "No native fresh Windows profile/VM installation",
+    "No physical RTX 20/40/50 or native DPI matrix",
+    "Mocked IPC and extracted resolver reproductions have explicitly limited boundaries",
+    "v1.3 fixes and matrix remain pending"
+  ]
+}

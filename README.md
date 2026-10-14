@@ -42,34 +42,44 @@ extra downloads.
 first use. It requires a CUDA-capable NVIDIA GPU. See
 [Install and first launch](docs/INSTALL.md) for details.
 
-[v1.2.6](https://github.com/cia213/cia-app/releases/tag/v1.2.6) includes the
-[RIFE installation fix](docs/CORRECTION-INSTALLATION-RIFE.md). If INSTALL ENVIRONMENT
-fails in v1.2.5, update to v1.2.6 and retry the installation.
+v1.3.0 verifies the complete RIFE environment before reporting it ready and
+provides **REPAIR ENVIRONMENT** for an incomplete or outdated installation.
+It also preserves audio tracks and timing, keeps failure diagnostics visible,
+and prevents conflicting operations. See the [release notes](docs/RELEASE-v1.3.0.md)
+and [validation scope](docs/VALIDATION-v1.3.0.md).
 
 ## Build from source
 
-Prerequisites: current Node.js, Rust stable, and Windows build tools.
+Prerequisites: Node.js 24, Rust stable, Python 3.11 or later, and Windows C++
+build tools. The source checks use the committed npm and Cargo lockfiles.
 
 ```powershell
 npm ci
-npm run tauri dev
+python scripts/prepare-release.py
+npm run tauri dev -- --config src-tauri/target/release-kit-v1.3.0/build.json
 ```
 
-Create an NSIS installer:
+Prepare the verified render payload and create an NSIS installer:
 
 ```powershell
-npm run tauri build
+python scripts/prepare-release.py
+npm run tauri build -- --config src-tauri/target/release-kit-v1.3.0/build.json
 ```
 
-The release build also needs the ignored release payload described in
-[runtime release notes](docs/RUNTIME-RELEASE-NOTES.md) before it can be
-redistributed.
+The preparation script downloads pinned archives, verifies their hashes, and
+stages the payload under ignored `src-tauri/target/`. A plain Tauri build needs
+an existing local runtime; use the staged configuration above for distribution.
+See [runtime release notes](docs/RUNTIME-RELEASE-NOTES.md) for the licence,
+verification and signing requirements.
 
 ## Architecture, quality and performance
 
-The [project map](docs/CARTOGRAPHIE.md) describes the current rendering paths.
-The [quality and performance report](docs/PATCH-QUALITE-PERFORMANCES.md)
-records the audit, fixes, measurements and remaining limits.
+The [project map](docs/CARTOGRAPHIE.md) and
+[quality and performance report](docs/PATCH-QUALITE-PERFORMANCES.md) document
+the earlier rendering architecture and measurements. The
+[v1.3 audit](docs/AUDIT-v1.3.md) records defects in the v1.2.7 baseline;
+the [v1.3.0 release notes](docs/RELEASE-v1.3.0.md) describe the resulting fixes,
+and [validation](docs/VALIDATION-v1.3.0.md) states what was exercised.
 
 RIFE now streams interpolated RGB frames directly to FFmpeg. FP32 and software
 H.264 remain the defaults; FP16 and NVIDIA H.264 encoding are explicit options.
@@ -82,10 +92,13 @@ Source-only checks:
 ```powershell
 npm test
 npm run build
+npm run test:browser
 python -m unittest discover -s tests -v
+$env:TAURI_CONFIG = '{"bundle":{"resources":["resources/time_remap.py","resources/rife_worker.py","resources/runtime_health.py","resources/bootstrap/bootstrap-rife.ps1","resources/bootstrap/bootstrap-python.ps1","resources/bootstrap/rife-profile.json","resources/bootstrap/rife-requirements.lock"]}}'
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path src-tauri/Cargo.toml
+Remove-Item Env:TAURI_CONFIG
 ```
 
 On Windows, the private Python bootstrap test downloads and verifies the official
@@ -93,9 +106,12 @@ package without changing the system's Python installation or user `PATH`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/test_bootstrap.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests/test_bootstrap_generation.ps1
 ```
 
-GPU and runtime integration checks are opt-in and documented in the report.
+The browser suite uses installed Microsoft Edge and mocked Tauri IPC. Native
+WebView2 and actual CUDA/media checks are separate, opt-in checks documented in
+[validation](docs/VALIDATION-v1.3.0.md).
 
 ## Licence and notices
 

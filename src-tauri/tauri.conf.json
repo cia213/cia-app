@@ -1,6 +1,6 @@
 {
   "productName": "cia render",
-  "version": "1.2.7",
+  "version": "1.3.0",
   "identifier": "io.github.cia213.ciaapp",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -11,15 +11,20 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "shortDescription": "Local video interpolation and rendering.",
     "longDescription": "cia render is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
     "resources": [
       "resources/time_remap.py",
       "resources/rife_worker.py",
+      "resources/runtime_health.py",
       "resources/runtime",
       "resources/bootstrap/bootstrap-rife.ps1",
-      "resources/bootstrap/bootstrap-python.ps1"
+      "resources/bootstrap/bootstrap-python.ps1",
+      "resources/bootstrap/rife-profile.json",
+      "resources/bootstrap/rife-requirements.lock"
     ],
     "icon": [
       "icons/32x32.png",
@@ -29,6 +34,9 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
       "nsis": {
         "installMode": "currentUser",
         "startMenuFolder": "cia render",
@@ -55,11 +63,15 @@
         "title": "cia render",
         "width": 920,
         "height": 540,
-        "resizable": false,
+        "resizable": true,
+        "minWidth": 640,
+        "minHeight": 440,
         "decorations": false,
         "dragDropEnabled": true
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
   }
 }

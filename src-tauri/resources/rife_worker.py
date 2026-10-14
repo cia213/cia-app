@@ -6,6 +6,7 @@ Scene/static-frame behavior follows Practical-RIFE's video inference algorithm.
 import argparse
 from collections import deque
 import importlib
+import importlib.util
 import os
 from pathlib import Path
 from queue import Queue, Empty, Full
@@ -14,6 +15,21 @@ import sys
 import threading
 import time
 import types
+
+
+def verify_model_code(args):
+    spec = importlib.util.spec_from_file_location("cia_runtime_health", Path(__file__).with_name("runtime_health.py"))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("The bundled interpolation integrity checker is missing. Reinstall cia render.")
+    health = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(health)
+    profile = health.read_profile()
+    project = Path(args.rife_dir).resolve()
+    model_dir = Path(args.model_dir).resolve()
+    if args.runtime_manifest:
+        health.verify_runtime(project, model_dir, Path(args.runtime_manifest).resolve(), profile, full_integrity=False)
+    elif health.sha256(model_dir / "flownet.pkl").lower() == profile["modelFiles"]["flownet.pkl"].lower():
+        health.verify_files(model_dir, profile["modelFiles"])
 
 
 def read_frame(pipe, size):
@@ -51,22 +67,32 @@ def load_model_weights(model, torch, model_dir):
 
 
 def main(args):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     # Avoid the Windows CRT transforming binary stdout newline bytes.
     if os.name == "nt":
         import msvcrt
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    # Import installed libraries before exposing model code on the search path.
+    # A project-local torch.py must not replace the managed Torch installation.
+    import numpy as np
+    import torch
+    from torch.nn import functional as F
+
+    verify_model_code(args)
     sys.path.insert(0, str(Path(args.rife_dir).resolve()))
     package = types.ModuleType("train_log")
     package.__path__ = [str(Path(args.model_dir).resolve())]
     sys.modules["train_log"] = package
 
-    import numpy as np
-    import torch
-    from torch.nn import functional as F
     from model.pytorch_msssim import ssim_matlab
 
     if not torch.cuda.is_available():
         raise RuntimeError("RIFE requires a CUDA-capable NVIDIA GPU")
+    if args.device_index < 0 or args.device_index >= torch.cuda.device_count():
+        raise RuntimeError("The selected CUDA device is unavailable")
+    torch.cuda.set_device(args.device_index)
     torch.set_grad_enabled(False)
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
@@ -97,8 +123,8 @@ def main(args):
     errors = []
     decoder_logs = deque(maxlen=32)
     decoder = subprocess.Popen(
-        [args.ffmpeg, "-v", "error", "-xerror", "-err_detect", "explode", "-i", args.video, "-map", f"0:{args.video_index}",
-         "-an", "-vf", f"fps={args.fps}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+        [args.ffmpeg, "-v", "error", "-xerror", "-err_detect", "explode", "-copyts", "-i", args.video, "-map", f"0:{args.video_index}",
+         "-an", "-vf", f"setpts=PTS-STARTPTS,fps={args.fps}:start_time=0", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
@@ -239,6 +265,8 @@ if __name__ == "__main__":
     parser.add_argument("--ffmpeg", required=True)
     parser.add_argument("--rife-dir", required=True)
     parser.add_argument("--model-dir", required=True)
+    parser.add_argument("--runtime-manifest")
+    parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
     parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--height", type=int, required=True)

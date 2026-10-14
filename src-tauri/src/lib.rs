@@ -13,6 +13,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+#[cfg(target_os = "windows")]
+mod output_recovery;
+#[cfg(test)]
+mod reliability_tests;
+mod runtime_health;
+use runtime_health::RifeHealth;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -119,6 +125,7 @@ struct RuntimeSnapshot {
     detected: RuntimeConfig,
     components: Vec<ComponentStatus>,
     rife_ready: bool,
+    rife_health: RifeHealth,
     smoothie_ready: bool,
     media_tools_ready: bool,
     load_error: Option<String>,
@@ -136,6 +143,29 @@ struct VideoInfo {
     color_space: Option<String>,
     color_primaries: Option<String>,
     sample_aspect_ratio: String,
+    video_start_time: f64,
+    audio_tracks: Vec<AudioTrack>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AudioTrack {
+    index: u32,
+    codec: Option<String>,
+    channels: Option<u32>,
+    channel_layout: Option<String>,
+    language: Option<String>,
+    title: Option<String>,
+    start_time: f64,
+    duration: Option<f64>,
+    default: bool,
+    forced: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderControlState {
+    job_id: String,
+    paused: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -172,6 +202,8 @@ struct OutputReservation {
     lock: PathBuf,
     work_directory: Option<PathBuf>,
     process_owner: Option<Arc<process_control::ProcessOwner>>,
+    #[cfg(target_os = "windows")]
+    journal: Option<output_recovery::Journal>,
 }
 
 impl Drop for OutputReservation {
@@ -181,6 +213,11 @@ impl Drop for OutputReservation {
         }
         if let Some(work_directory) = &self.work_directory {
             let _ = fs::remove_dir_all(work_directory);
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(journal) = &self.journal {
+            let _ = journal.finish();
+            return;
         }
         let _ = fs::remove_file(&self.lock);
     }
@@ -265,6 +302,8 @@ struct RenderJob {
     owner: Option<Arc<process_control::ProcessOwner>>,
     paused: bool,
     cancel_requested: bool,
+    last_activity: std::time::Instant,
+    progress_frame: u64,
 }
 
 #[derive(Default)]
@@ -423,6 +462,8 @@ impl<'a> JobGuard<'a> {
                 owner: None,
                 paused: false,
                 cancel_requested: false,
+                last_activity: std::time::Instant::now(),
+                progress_frame: 0,
             },
         );
         drop(jobs);
@@ -454,9 +495,11 @@ impl<'a> JobGuard<'a> {
         if job.cancel_requested {
             return Err("CIA_RENDER_CANCELLED".to_string());
         }
-        let (child, owner) = process_control::spawn_owned(command)?;
+        let (child, owner) = process_control::spawn_owned_with_pause(command, job.paused)?;
         job.process_id = child.id();
         job.owner = Some(Arc::new(owner));
+        job.last_activity = std::time::Instant::now();
+        job.progress_frame = 0;
         Ok(child)
     }
 
@@ -476,6 +519,206 @@ impl<'a> JobGuard<'a> {
         }
         self.check_cancelled()
     }
+}
+
+async fn wait_for_job(
+    child: &mut tokio::process::Child,
+    job: &JobGuard<'_>,
+) -> Result<std::process::ExitStatus, String> {
+    let mut checked = std::time::Instant::now();
+    let mut idle = std::time::Duration::ZERO;
+    let mut observed = checked;
+    loop {
+        tokio::select! {
+            result = child.wait() => return result.map_err(|error| error.to_string()),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                let state = running_job(job.registry, &job.job_id)?;
+                job.check_cancelled()?;
+                let now = std::time::Instant::now();
+                if state.paused || state.last_activity > observed || now.duration_since(checked) > std::time::Duration::from_secs(15) {
+                    idle = std::time::Duration::ZERO;
+                } else { idle += now.duration_since(checked); }
+                observed = state.last_activity;
+                checked = now;
+                if idle >= std::time::Duration::from_secs(600) {
+                    job.terminate_descendants();
+                    let _ = child.wait().await;
+                    return Err("The operation stopped making progress for ten active minutes. It was stopped safely; review the diagnostics and retry.".into());
+                }
+            }
+        }
+    }
+}
+
+async fn collect_job_output(
+    mut child: tokio::process::Child,
+    job: &JobGuard<'_>,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    async fn read<R: AsyncRead + Unpin>(
+        mut reader: R,
+        job: &JobGuard<'_>,
+        finished: &std::sync::atomic::AtomicBool,
+    ) -> String {
+        let mut bytes = [0u8; 4096];
+        let mut retained = Vec::new();
+        let mut drain_deadline = None;
+        let mut pending = String::new();
+        let mut last_progress = 0u64;
+        loop {
+            if finished.load(Ordering::Relaxed) {
+                let deadline = drain_deadline.get_or_insert_with(|| {
+                    std::time::Instant::now() + std::time::Duration::from_secs(5)
+                });
+                if std::time::Instant::now() >= *deadline {
+                    break;
+                }
+            }
+            let count = tokio::select! {
+                result = reader.read(&mut bytes) => match result { Ok(count) => count, Err(_) => break },
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    if finished.load(Ordering::Relaxed) {
+                        let deadline = drain_deadline.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(5));
+                        if std::time::Instant::now() >= *deadline { break; }
+                    }
+                    continue;
+                }
+            };
+            if count == 0 {
+                break;
+            }
+            pending.push_str(&String::from_utf8_lossy(&bytes[..count]));
+            while let Some(end) = pending.find('\n') {
+                let line = pending[..end].trim();
+                if let Some(progress) = line
+                    .strip_prefix("out_time_us=")
+                    .or_else(|| line.strip_prefix("frame="))
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                {
+                    if progress > last_progress {
+                        last_progress = progress;
+                        if let Ok(mut jobs) = job.registry.jobs.lock() {
+                            if let Some(state) = jobs.get_mut(&job.job_id) {
+                                state.last_activity = std::time::Instant::now();
+                            }
+                        }
+                    }
+                }
+                pending.drain(..=end);
+            }
+            if pending.len() > 8192 {
+                pending.clear();
+            }
+            retained.extend_from_slice(&bytes[..count]);
+            if retained.len() > 65536 {
+                retained.drain(..retained.len() - 65536);
+            }
+        }
+        String::from_utf8_lossy(&retained).into_owned()
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Process stdout was unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("Process stderr was unavailable")?;
+    let finished = std::sync::atomic::AtomicBool::new(false);
+    let owner = running_job(job.registry, &job.job_id)?.owner;
+    let wait = async {
+        let result = async {
+            let status = wait_for_job(&mut child, job).await?;
+            if status.success() {
+                job.wait_for_descendants().await?;
+            }
+            Ok::<_, String>(status)
+        }
+        .await;
+        if let Some(owner) = owner {
+            owner.terminate();
+        }
+        finished.store(true, Ordering::Relaxed);
+        result
+    };
+    let (status, stdout, stderr) = tokio::join!(
+        wait,
+        read(stdout, job, &finished),
+        read(stderr, job, &finished)
+    );
+    job.check_cancelled()?;
+    Ok((status?, stdout, stderr))
+}
+
+async fn active_timeout<F: std::future::Future>(
+    duration: std::time::Duration,
+    job: Option<&JobGuard<'_>>,
+    future: F,
+) -> Result<F::Output, String> {
+    tokio::pin!(future);
+    let mut elapsed = std::time::Duration::ZERO;
+    let mut checked = std::time::Instant::now();
+    loop {
+        tokio::select! {
+            result = &mut future => return Ok(result),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                let now = std::time::Instant::now();
+                let paused = if let Some(job) = job { job.check_cancelled()?; running_job(job.registry, &job.job_id)?.paused } else { false };
+                let interval = now.duration_since(checked);
+                if !paused && interval < std::time::Duration::from_secs(2) { elapsed += interval; }
+                checked = now;
+                if elapsed >= duration { return Err("The operation exceeded its active processing deadline".into()); }
+            }
+        }
+    }
+}
+
+async fn preflight_encoder(
+    ffmpeg: &Path,
+    encoder: &str,
+    info: &VideoInfo,
+    job: &JobGuard<'_>,
+) -> Result<(), String> {
+    validate_encoder(encoder)?;
+    let mut command = Command::new(ffmpeg);
+    command
+        .args(["-hide_banner", "-v", "error", "-f", "lavfi", "-i"])
+        .arg(format!("color=size={}x{}:rate=1", info.width, info.height))
+        .args([
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            encoder,
+            "-f",
+            "null",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let child = job.spawn(&mut command)?;
+    let result = active_timeout(
+        std::time::Duration::from_secs(30),
+        Some(job),
+        collect_job_output(child, job),
+    )
+    .await;
+    let (status, _, error) = match result {
+        Ok(result) => result?,
+        Err(_) => {
+            job.terminate_descendants();
+            job.check_cancelled()?;
+            return Err(
+                "The video encoder check timed out. Review the graphics driver and retry.".into(),
+            );
+        }
+    };
+    if !status.success() {
+        return Err(format!("The {encoder} encoder cannot process this video's {}x{} dimensions. Select another encoder or update the graphics driver. {}", info.width, info.height, error.trim()));
+    }
+    Ok(())
 }
 
 impl Drop for JobGuard<'_> {
@@ -522,19 +765,18 @@ impl JobRegistry {
             }
         }
         self.cancel_all_previews();
+        runtime_health::shutdown();
     }
 }
 
 #[cfg(target_os = "windows")]
 mod process_control {
     use super::{Command, CREATE_NO_WINDOW};
-    use std::collections::VecDeque;
+    use std::collections::HashSet;
     use std::ffi::c_void;
     use std::mem::size_of;
 
     type Handle = *mut c_void;
-    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
-    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
     const PROCESS_SUSPEND_RESUME: u32 = 0x0000_0800;
     const PROCESS_ALL_NEEDED: u32 = 0x0000_0100 | 0x0000_0001 | PROCESS_SUSPEND_RESUME;
     const CREATE_SUSPENDED: u32 = 0x0000_0004;
@@ -594,6 +836,134 @@ mod process_control {
     }
 
     impl ProcessOwner {
+        fn process_ids(&self) -> Result<Vec<u32>, String> {
+            // The header contains two DWORDs; ULONG_PTR entries follow at
+            // offset eight. usize storage keeps the variable buffer aligned.
+            let mut capacity = 16usize;
+            for _ in 0..8 {
+                let header_words = 8 / size_of::<usize>();
+                let mut storage = vec![0usize; header_words + capacity];
+                let success = unsafe {
+                    QueryInformationJobObject(
+                        self.handle as Handle,
+                        3, // JobObjectBasicProcessIdList
+                        storage.as_mut_ptr().cast(),
+                        (storage.len() * size_of::<usize>()) as u32,
+                        std::ptr::null_mut(),
+                    )
+                };
+                let header = storage.as_ptr().cast::<u32>();
+                let assigned = unsafe { *header } as usize;
+                let returned = unsafe { *header.add(1) } as usize;
+                if success != 0 && returned <= capacity && returned == assigned {
+                    return storage[header_words..header_words + returned]
+                        .iter()
+                        .map(|pid| {
+                            u32::try_from(*pid)
+                                .map_err(|_| "Invalid owned process identifier".to_string())
+                        })
+                        .collect();
+                }
+                let error = std::io::Error::last_os_error();
+                if success == 0 && error.raw_os_error() != Some(234) {
+                    return Err(format!("Unable to inspect owned render processes: {error}"));
+                }
+                capacity = assigned.max(capacity * 2);
+                if capacity > 8192 {
+                    return Err("The owned process list exceeds its safety limit".into());
+                }
+            }
+            Err("The owned process list changed too quickly to control safely".into())
+        }
+
+        /// Open each kernel object from this job and recheck membership before
+        /// changing it. A recycled PID can never control an unrelated process.
+        pub fn set_paused(&self, paused: bool) -> Result<(), String> {
+            let mut affected = Vec::<Handle>::new();
+            let mut seen = HashSet::new();
+            let outcome = (|| {
+                for _ in 0..8 {
+                    let ids = self.process_ids()?;
+                    let mut added = false;
+                    for pid in ids {
+                        if !seen.insert(pid) {
+                            continue;
+                        }
+                        let handle =
+                            unsafe { OpenProcess(PROCESS_SUSPEND_RESUME | 0x1000, 0, pid) };
+                        if handle.is_null() {
+                            let error = std::io::Error::last_os_error();
+                            if error.raw_os_error() == Some(87) {
+                                continue;
+                            }
+                            return Err(format!(
+                                "Unable to control an owned render process: {error}"
+                            ));
+                        }
+                        let mut belongs = 0;
+                        let membership =
+                            unsafe { IsProcessInJob(handle, self.handle as Handle, &mut belongs) };
+                        if membership == 0 || belongs == 0 {
+                            let error = std::io::Error::last_os_error();
+                            unsafe { CloseHandle(handle) };
+                            if membership == 0 {
+                                return Err(format!(
+                                    "Unable to verify render process ownership: {error}"
+                                ));
+                            }
+                            continue;
+                        }
+                        let status = unsafe {
+                            if paused {
+                                NtSuspendProcess(handle)
+                            } else {
+                                NtResumeProcess(handle)
+                            }
+                        };
+                        if status < 0 {
+                            unsafe { CloseHandle(handle) };
+                            return Err(
+                                "Unable to change the pause state of an owned render process"
+                                    .into(),
+                            );
+                        }
+                        affected.push(handle);
+                        added = true;
+                    }
+                    if !paused || !added {
+                        return if affected.is_empty() {
+                            Err("The render process ended before it could be controlled".into())
+                        } else {
+                            Ok(())
+                        };
+                    }
+                    // Rescan after suspending parents: a child started during
+                    // the first snapshot must also be suspended exactly once.
+                }
+                Err("The render process list did not settle while pausing".into())
+            })();
+            if outcome.is_err() {
+                let mut rollback_failed = false;
+                for handle in &affected {
+                    let status = unsafe {
+                        if paused {
+                            NtResumeProcess(*handle)
+                        } else {
+                            NtSuspendProcess(*handle)
+                        }
+                    };
+                    rollback_failed |= status < 0;
+                }
+                if rollback_failed {
+                    self.terminate();
+                }
+            }
+            for handle in affected {
+                unsafe { CloseHandle(handle) };
+            }
+            outcome
+        }
+
         fn active_processes(&self) -> Result<u32, String> {
             let mut accounting = AccountingInformation::default();
             if unsafe {
@@ -615,7 +985,12 @@ mod process_control {
         }
 
         pub fn wait_for_exit(&self) -> Result<(), String> {
+            let start = std::time::Instant::now();
             while self.active_processes()? != 0 {
+                if start.elapsed() > std::time::Duration::from_secs(15) {
+                    self.terminate();
+                    return Err("An engine left background processes running after completion; they were stopped safely.".into());
+                }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Ok(())
@@ -644,9 +1019,7 @@ mod process_control {
         }
     }
 
-    pub fn spawn_owned(
-        command: &mut Command,
-    ) -> Result<(tokio::process::Child, ProcessOwner), String> {
+    fn create_owner() -> Result<ProcessOwner, String> {
         let handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
         if handle.is_null() {
             return Err(format!(
@@ -673,6 +1046,21 @@ mod process_control {
                 std::io::Error::last_os_error()
             ));
         }
+        Ok(owner)
+    }
+
+    pub fn spawn_owned(
+        command: &mut Command,
+    ) -> Result<(tokio::process::Child, ProcessOwner), String> {
+        spawn_owned_with_pause(command, false)
+    }
+
+    pub fn spawn_owned_with_pause(
+        command: &mut Command,
+        paused: bool,
+    ) -> Result<(tokio::process::Child, ProcessOwner), String> {
+        let owner = create_owner()?;
+        let handle = owner.handle as Handle;
         command
             .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
             .kill_on_drop(true);
@@ -691,8 +1079,10 @@ mod process_control {
             ));
         }
         let assigned = unsafe { AssignProcessToJobObject(handle, process) };
-        let resumed = if assigned != 0 {
+        let resumed = if assigned != 0 && !paused {
             unsafe { NtResumeProcess(process) }
+        } else if assigned != 0 {
+            0 // Preserve the initial suspended main thread for a paused job.
         } else {
             -1
         };
@@ -710,26 +1100,47 @@ mod process_control {
         Ok((child, owner))
     }
 
-    #[repr(C)]
-    struct ProcessEntry32W {
-        dw_size: u32,
-        cnt_usage: u32,
-        th32_process_id: u32,
-        th32_default_heap_id: usize,
-        th32_module_id: u32,
-        cnt_threads: u32,
-        th32_parent_process_id: u32,
-        pc_pri_class_base: i32,
-        dw_flags: u32,
-        sz_exe_file: [u16; 260],
+    pub fn spawn_std_owned(
+        command: &mut std::process::Command,
+    ) -> Result<(std::process::Child, ProcessOwner), String> {
+        use std::os::windows::process::CommandExt;
+        let owner = create_owner()?;
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("Unable to start runtime verifier: {error}"))?;
+        let process = unsafe { OpenProcess(PROCESS_ALL_NEEDED, 0, child.id()) };
+        let assigned = if process.is_null() {
+            0
+        } else {
+            unsafe { AssignProcessToJobObject(owner.handle as Handle, process) }
+        };
+        let resumed = if assigned != 0 {
+            unsafe { NtResumeProcess(process) }
+        } else {
+            -1
+        };
+        let error = std::io::Error::last_os_error();
+        if !process.is_null() {
+            unsafe {
+                CloseHandle(process);
+            }
+        }
+        if assigned == 0 || resumed < 0 {
+            owner.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Unable to own runtime verifier process tree: {error}"
+            ));
+        }
+        Ok((child, owner))
     }
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
-        fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
-        fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
         fn OpenProcess(access: u32, inherit_handle: i32, process_id: u32) -> Handle;
+        fn IsProcessInJob(process: Handle, job: Handle, belongs: *mut i32) -> i32;
         fn CloseHandle(handle: Handle) -> i32;
         fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> Handle;
         fn SetInformationJobObject(
@@ -754,81 +1165,6 @@ mod process_control {
         fn NtSuspendProcess(process: Handle) -> i32;
         fn NtResumeProcess(process: Handle) -> i32;
     }
-
-    fn process_tree(root: u32) -> Result<Vec<u32>, String> {
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err("Unable to inspect the render process tree".to_string());
-        }
-
-        let result = {
-            let mut entry = ProcessEntry32W {
-                dw_size: size_of::<ProcessEntry32W>() as u32,
-                cnt_usage: 0,
-                th32_process_id: 0,
-                th32_default_heap_id: 0,
-                th32_module_id: 0,
-                cnt_threads: 0,
-                th32_parent_process_id: 0,
-                pc_pri_class_base: 0,
-                dw_flags: 0,
-                sz_exe_file: [0; 260],
-            };
-            let mut parents = Vec::new();
-            if unsafe { Process32FirstW(snapshot, &mut entry) } != 0 {
-                loop {
-                    parents.push((entry.th32_process_id, entry.th32_parent_process_id));
-                    entry.dw_size = size_of::<ProcessEntry32W>() as u32;
-                    if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
-                        break;
-                    }
-                }
-            }
-
-            let mut tree = vec![root];
-            let mut queue = VecDeque::from([root]);
-            while let Some(parent) = queue.pop_front() {
-                for (process_id, parent_id) in &parents {
-                    if *parent_id == parent && !tree.contains(process_id) {
-                        tree.push(*process_id);
-                        queue.push_back(*process_id);
-                    }
-                }
-            }
-            Ok(tree)
-        };
-        unsafe { CloseHandle(snapshot) };
-        result
-    }
-
-    pub fn set_process_tree_paused(root: u32, paused: bool) -> Result<(), String> {
-        let mut tree = process_tree(root)?;
-        if paused {
-            tree.reverse();
-        }
-        let mut affected = 0usize;
-        for process_id in tree {
-            let handle = unsafe { OpenProcess(PROCESS_SUSPEND_RESUME, 0, process_id) };
-            if handle.is_null() {
-                continue;
-            }
-            let status = unsafe {
-                if paused {
-                    NtSuspendProcess(handle)
-                } else {
-                    NtResumeProcess(handle)
-                }
-            };
-            unsafe { CloseHandle(handle) };
-            if status >= 0 {
-                affected += 1;
-            }
-        }
-        if affected == 0 {
-            return Err("The render process ended before it could be controlled".to_string());
-        }
-        Ok(())
-    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -849,6 +1185,15 @@ mod process_control {
             .spawn()
             .map(|child| (child, ProcessOwner))
             .map_err(|error| error.to_string())
+    }
+    pub fn spawn_owned_with_pause(
+        command: &mut Command,
+        paused: bool,
+    ) -> Result<(tokio::process::Child, ProcessOwner), String> {
+        if paused {
+            return Err("Pause is currently supported on Windows only".into());
+        }
+        spawn_owned(command)
     }
 }
 
@@ -1078,9 +1423,68 @@ fn bundled_smoothie_runtime(
 
 fn rife_install_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
-        .app_data_dir()
+        .app_local_data_dir()
         .map(|directory| directory.join("runtimes").join("rife"))
         .map_err(|error| format!("Unable to resolve the cia render runtime directory: {error}"))
+}
+
+fn managed_rife_config(app: &tauri::AppHandle) -> Result<Option<RifeConfig>, String> {
+    let root = rife_install_root(app)?;
+    let pointer = root.join("active.json");
+    if !pointer.exists() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_slice(
+        &fs::read(&pointer)
+            .map_err(|error| format!("Unable to read managed RIFE pointer: {error}"))?,
+    )
+    .map_err(|error| format!("The managed RIFE pointer is invalid: {error}"))?;
+    if value["schemaVersion"].as_u64() != Some(1) {
+        return Err("Unsupported managed RIFE pointer. Select Repair environment.".into());
+    }
+    let resolve = |key: &str| -> Result<String, String> {
+        let relative = value[key]
+            .as_str()
+            .ok_or_else(|| format!("Managed RIFE pointer lacks {key}"))?;
+        Ok(runtime_health::pointer_path(&root, relative)?
+            .to_string_lossy()
+            .into_owned())
+    };
+    Ok(Some(RifeConfig {
+        python_executable: Some(resolve("pythonExecutable")?),
+        script: None,
+        directory: Some(resolve("rifeDirectory")?),
+        model_file: Some(resolve("modelFile")?),
+    }))
+}
+
+fn effective_config(app: &tauri::AppHandle, mut config: RuntimeConfig) -> RuntimeConfig {
+    if config.rife.python_executable.is_none() {
+        if let Ok(Some(managed)) = managed_rife_config(app) {
+            config.rife = managed;
+        }
+    }
+    normalize_config(config)
+}
+
+fn probe_rife_health(app: &tauri::AppHandle, config: &RuntimeConfig, force: bool) -> RifeHealth {
+    let configured = config.rife.python_executable.is_some() || config.rife.directory.is_some();
+    match rife_runtime(config, app) {
+        Err(error) => RifeHealth::unavailable(if configured { "broken" } else { "missing" }, error),
+        Ok(runtime) => match bundled_resource(app, "runtime_health.py") {
+            None => RifeHealth::unavailable(
+                "broken",
+                "The bundled runtime verifier is missing. Reinstall cia render.",
+            ),
+            Some(script) => runtime_health::probe(
+                &runtime.python,
+                &script,
+                &runtime.directory,
+                &runtime.model_directory,
+                force,
+            ),
+        },
+    }
 }
 
 fn effective_rife_script(config: &RuntimeConfig, app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -1192,7 +1596,8 @@ fn snapshot_from_config(
     detected: RuntimeConfig,
     load_error: Option<String>,
 ) -> RuntimeSnapshot {
-    let rife_ready = rife_runtime(&config, app).is_ok();
+    let rife_health = probe_rife_health(app, &config, false);
+    let rife_ready = rife_health.ready();
     let smoothie_ready = smoothie_runtime(&config, app).is_ok();
     let python = existing_file(&config.rife.python_executable);
     let script = effective_rife_script(&config, app);
@@ -1298,6 +1703,7 @@ fn snapshot_from_config(
         config,
         detected,
         rife_ready,
+        rife_health,
         smoothie_ready,
         media_tools_ready: ffmpeg.is_some() && ffprobe.is_some(),
         components,
@@ -1308,18 +1714,21 @@ fn snapshot_from_config(
 fn runtime_snapshot(app: &tauri::AppHandle) -> RuntimeSnapshot {
     let detected = auto_detect_config();
     match load_config(app) {
-        Ok(config) => snapshot_from_config(app, normalize_config(config), detected, None),
+        Ok(config) => snapshot_from_config(app, effective_config(app, config), detected, None),
         Err(error) => snapshot_from_config(app, RuntimeConfig::default(), detected, Some(error)),
     }
 }
 
 fn required_file(value: &Option<String>, label: &str) -> Result<PathBuf, String> {
-    existing_file(value).ok_or_else(|| format!("{label} is not configured. Open Runtime Setup."))
+    existing_file(value).ok_or_else(|| {
+        format!("{label} is missing or invalid. Use the recovery controls on the relevant page.")
+    })
 }
 
 fn required_directory(value: &Option<String>, label: &str) -> Result<PathBuf, String> {
-    existing_directory(value)
-        .ok_or_else(|| format!("{label} is not configured. Open Runtime Setup."))
+    existing_directory(value).ok_or_else(|| {
+        format!("{label} is missing or invalid. Use the recovery controls on the relevant page.")
+    })
 }
 
 fn media_tools(config: &RuntimeConfig, app: &tauri::AppHandle) -> Result<MediaToolPaths, String> {
@@ -1436,11 +1845,12 @@ where
     let mut reader = reader;
     let mut buf = [0u8; 4096];
     let mut pending = String::new();
+    let mut utf8_tail = Vec::new();
     loop {
         match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]);
+                let chunk = decode_log_chunk(&mut utf8_tail, &buf[..n]);
                 pending.push_str(&chunk);
                 let (consumed, lines) = {
                     let bytes = pending.as_bytes();
@@ -1462,6 +1872,22 @@ where
                 pending.drain(..consumed);
                 bound_pending_log(&mut pending);
                 for line in lines {
+                    if let Some(download) = line.strip_prefix("CIA_DOWNLOAD ") {
+                        let field = |name: &str| {
+                            download
+                                .split_whitespace()
+                                .find_map(|part| {
+                                    part.strip_prefix(name)
+                                        .and_then(|value| value.parse::<u64>().ok())
+                                })
+                                .unwrap_or(0)
+                        };
+                        let label = download
+                            .split_once("label=")
+                            .map(|(_, value)| value)
+                            .unwrap_or("");
+                        let _ = app.emit("install-progress", json!({"bytesDownloaded": field("bytes="), "bytesTotal": field("total="), "downloadLabel": label}));
+                    }
                     if let Some(progress) = line.strip_prefix("CIA_PROGRESS ") {
                         let mut step = 0u32;
                         let mut total = 0u32;
@@ -1483,12 +1909,13 @@ where
                             json!({ "step": step, "total": total, "label": label }),
                         );
                     }
-                    let _ = app.emit("live-log", &line);
+                    emit_log(&app, None, &line);
                 }
             }
             Err(_) => break,
         }
     }
+    pending.push_str(&String::from_utf8_lossy(&utf8_tail));
     let trailing = pending.trim();
     if !trailing.is_empty() {
         let _ = app.emit("live-log", trailing);
@@ -1519,11 +1946,94 @@ impl Drop for PumpTaskGuard {
 }
 
 fn emit_log(app: &tauri::AppHandle, job_id: Option<&str>, line: &str) {
+    if let Ok(mut jobs) = app.state::<JobRegistry>().jobs.lock() {
+        let id = job_id.unwrap_or("install-rife");
+        if let Some(job) = jobs.get_mut(id) {
+            if id == "install-rife" {
+                job.last_activity = std::time::Instant::now();
+            } else if let Some(frame) = line
+                .split("frame=")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                if frame > job.progress_frame {
+                    job.progress_frame = frame;
+                    job.last_activity = std::time::Instant::now();
+                }
+            }
+        }
+    }
     if let Some(job_id) = job_id {
         let _ = app.emit("render-log", json!({ "jobId": job_id, "line": line }));
     } else {
         let _ = app.emit("live-log", line);
     }
+}
+
+fn decode_log_chunk(tail: &mut Vec<u8>, chunk: &[u8]) -> String {
+    tail.extend_from_slice(chunk);
+    let mut result = String::new();
+    let mut consumed = 0;
+    while consumed < tail.len() {
+        match std::str::from_utf8(&tail[consumed..]) {
+            Ok(text) => {
+                result.push_str(text);
+                consumed = tail.len();
+            }
+            Err(error) => {
+                let end = consumed + error.valid_up_to();
+                result.push_str(std::str::from_utf8(&tail[consumed..end]).unwrap_or_default());
+                consumed = end;
+                match error.error_len() {
+                    Some(length) => {
+                        result.push('\u{fffd}');
+                        consumed += length;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    tail.drain(..consumed);
+    result
+}
+
+fn diagnostic_file(app: &tauri::AppHandle, job_id: Option<&str>) -> Option<fs::File> {
+    let directory = app.path().app_local_data_dir().ok()?.join("diagnostics");
+    fs::create_dir_all(&directory).ok()?;
+    let safe_id: String = job_id
+        .unwrap_or("installation")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(80)
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let path = directory.join(format!("cia-{stamp}-{safe_id}.log"));
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .ok()?;
+    let mut previous: Vec<_> = fs::read_dir(&directory)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.is_file()
+                && entry.file_name().to_string_lossy().starts_with("cia-")
+                && path.extension().is_some_and(|v| v == "log"))
+            .then_some(path)
+        })
+        .collect();
+    previous.sort();
+    for obsolete in previous.iter().take(previous.len().saturating_sub(20)) {
+        let _ = fs::remove_file(obsolete);
+    }
+    Some(file)
 }
 
 async fn pump_scoped<R>(reader: R, app: tauri::AppHandle, job_id: Option<String>) -> Vec<String>
@@ -1533,12 +2043,16 @@ where
     let mut reader = reader;
     let mut buf = [0u8; 4096];
     let mut pending = String::new();
+    let mut utf8_tail = Vec::new();
     let mut collected = VecDeque::new();
+    let mut last_real_frames = None;
+    let mut diagnostic = diagnostic_file(&app, job_id.as_deref());
+    let mut diagnostic_bytes = 0usize;
     loop {
         match reader.read(&mut buf).await {
             Ok(0) => break,
             Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]);
+                let chunk = decode_log_chunk(&mut utf8_tail, &buf[..n]);
                 pending.push_str(&chunk);
                 let (consumed, lines) = {
                     let bytes = pending.as_bytes();
@@ -1560,9 +2074,37 @@ where
                 pending.drain(..consumed);
                 bound_pending_log(&mut pending);
                 for line in &lines {
+                    if line.contains("showinfo@cia_real") {
+                        if let Some(count) = line
+                            .split(" n:")
+                            .nth(1)
+                            .and_then(|s| s.split_whitespace().next())
+                            .and_then(|s| s.parse::<u64>().ok())
+                        {
+                            last_real_frames = Some(count + 1);
+                            if let Some(id) = job_id.as_deref() {
+                                if let Ok(mut jobs) = app.state::<JobRegistry>().jobs.lock() {
+                                    if let Some(job) = jobs.get_mut(id) {
+                                        job.last_activity = std::time::Instant::now();
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     emit_log(&app, job_id.as_deref(), line);
+                    if diagnostic_bytes < 2 * 1024 * 1024 {
+                        if let Some(file) = diagnostic.as_mut() {
+                            use std::io::Write;
+                            let _ = writeln!(file, "{line}");
+                            diagnostic_bytes += line.len() + 1;
+                        }
+                    }
                 }
                 for mut line in lines {
+                    if line.contains("showinfo@cia_real") {
+                        continue;
+                    }
                     bound_pending_log(&mut line);
                     collected.push_back(line);
                     if collected.len() > 256 {
@@ -1573,6 +2115,7 @@ where
             Err(_) => break,
         }
     }
+    pending.push_str(&String::from_utf8_lossy(&utf8_tail));
     let trailing = pending.trim();
     if !trailing.is_empty() {
         emit_log(&app, job_id.as_deref(), trailing);
@@ -1580,6 +2123,9 @@ where
         if collected.len() > 256 {
             collected.pop_front();
         }
+    }
+    if let Some(frames) = last_real_frames {
+        collected.push_back(format!("CIA_SMOOTHIE_REAL_FRAMES {frames}"));
     }
     collected.into_iter().collect()
 }
@@ -1613,7 +2159,7 @@ async fn probe_video_impl(
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,duration,nb_frames,color_transfer,color_space,color_primaries,sample_aspect_ratio:stream_disposition=attached_pic:stream_side_data=rotation:stream_tags=rotate:format=duration",
+            "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,start_time,duration,nb_frames,nb_read_frames,channels,channel_layout,color_transfer,color_space,color_primaries,sample_aspect_ratio:stream_disposition=attached_pic,default,forced:stream_side_data=rotation:stream_tags=rotate,language,title,handler_name,DURATION:format=duration,start_time",
             "-of",
             "json",
         ])
@@ -1626,16 +2172,27 @@ async fn probe_video_impl(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let child = match job {
-        Some(job) => job.spawn(&mut command)?,
-        None => command
-            .spawn()
-            .map_err(|error| format!("FFprobe could not start: {error}"))?,
+    let (child, _owner) = match job {
+        Some(job) => (job.spawn(&mut command)?, None),
+        None => {
+            let (child, owner) = process_control::spawn_owned(&mut command)?;
+            (child, Some(owner))
+        }
     };
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| format!("FFprobe failed: {error}"))?;
+    let output = active_timeout(
+        std::time::Duration::from_secs(45),
+        job,
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|error| {
+        if error == "CIA_RENDER_CANCELLED" {
+            error
+        } else {
+            "Video analysis timed out. Check that the file and drive are accessible.".to_string()
+        }
+    })?
+    .map_err(|error| format!("FFprobe failed: {error}"))?;
     if let Some(job) = job {
         job.check_cancelled()?;
     }
@@ -1647,9 +2204,149 @@ async fn probe_video_impl(
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&raw)
+    let mut json: Value = serde_json::from_str(&raw)
         .map_err(|error| format!("FFprobe returned invalid JSON: {error}"))?;
+    if let Some(stream) = json["streams"].as_array_mut().and_then(|streams| {
+        streams.iter_mut().find(|stream| {
+            stream["codec_type"].as_str() == Some("video")
+                && stream["disposition"]["attached_pic"].as_u64().unwrap_or(0) == 0
+        })
+    }) {
+        let start = finite_json_number(&stream["start_time"]).unwrap_or(0.0);
+        let known_duration = finite_json_number(&stream["duration"])
+            .filter(|duration| *duration > 0.0)
+            .or_else(|| {
+                stream["tags"]["DURATION"]
+                    .as_str()
+                    .and_then(parse_clock_seconds)
+                    .map(|end| end - start)
+                    .filter(|duration| *duration > 0.0)
+            });
+        if known_duration.is_none() || start < 0.0 {
+            let fps = stream["avg_frame_rate"]
+                .as_str()
+                .and_then(positive_rate)
+                .or_else(|| stream["r_frame_rate"].as_str().and_then(positive_rate))
+                .ok_or("The video framerate is invalid")?;
+            let index = stream["index"].as_u64().unwrap_or(0);
+            let (start, duration) =
+                probe_packet_interval(video_path, ffprobe, index, fps, job).await?;
+            stream["start_time"] = Value::String(start.to_string());
+            stream["duration"] = Value::String(duration.to_string());
+        }
+    }
     parse_video_info(&json)
+}
+
+async fn probe_packet_interval(
+    video: &str,
+    ffprobe: &Path,
+    index: u64,
+    fps: f64,
+    job: Option<&JobGuard<'_>>,
+) -> Result<(f64, f64), String> {
+    let mut command = Command::new(ffprobe);
+    command
+        .args(["-v", "error", "-select_streams"])
+        .arg(index.to_string())
+        .args([
+            "-show_packets",
+            "-show_entries",
+            "packet=pts_time,duration_time",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(video)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let (mut child, owner) = match job {
+        Some(job) => (job.spawn(&mut command)?, None),
+        None => {
+            let (child, owner) = process_control::spawn_owned(&mut command)?;
+            (child, Some(owner))
+        }
+    };
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Timeline analysis stdout was unavailable")?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or("Timeline analysis stderr was unavailable")?;
+    let read_packets = async {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut lines = BufReader::new(stdout).lines();
+        let (mut first, mut last) = (f64::INFINITY, f64::NEG_INFINITY);
+        while let Some(line) = lines.next_line().await.map_err(|error| error.to_string())? {
+            let mut fields = line.split(',');
+            if let Some(start) = fields
+                .next()
+                .and_then(|value| value.parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+            {
+                let duration = fields
+                    .next()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(1.0 / fps);
+                first = first.min(start);
+                last = last.max(start + duration);
+            }
+        }
+        Ok::<_, String>((first, last))
+    };
+    let errors = async {
+        let mut retained = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(count) = stderr.read(&mut chunk).await {
+            if count == 0 {
+                break;
+            }
+            if retained.len() < 4096 {
+                retained.extend_from_slice(&chunk[..count.min(4096 - retained.len())]);
+            }
+        }
+        retained
+    };
+    let result = active_timeout(std::time::Duration::from_secs(60), job, async {
+        tokio::join!(child.wait(), read_packets, errors)
+    })
+    .await;
+    let (status, interval, errors) = match result {
+        Ok(result) => result,
+        Err(_) => {
+            if let Some(job) = job {
+                job.terminate_descendants();
+                job.check_cancelled()?;
+            }
+            if let Some(owner) = owner {
+                owner.terminate();
+            }
+            return Err(
+                "Video timeline analysis timed out. Remux the recording before retrying.".into(),
+            );
+        }
+    };
+    if let Some(job) = job {
+        job.check_cancelled()?;
+    }
+    let (first, last) = interval?;
+    if !status.map_err(|error| error.to_string())?.success()
+        || !errors.is_empty()
+        || !first.is_finite()
+        || !last.is_finite()
+        || last <= first
+    {
+        return Err(
+            "The video timeline could not be determined. Remux the recording before retrying."
+                .into(),
+        );
+    }
+    Ok((first, last - first))
 }
 
 fn positive_rate(value: &str) -> Option<f64> {
@@ -1707,9 +2404,17 @@ fn parse_video_info(json: &Value) -> Result<VideoInfo, String> {
         .and_then(positive_rate)
         .or_else(|| stream["r_frame_rate"].as_str().and_then(positive_rate))
         .ok_or("The video framerate is invalid")?;
+    let video_start_time = finite_json_number(&stream["start_time"]).unwrap_or(0.0);
     let duration: f64 = stream["duration"]
         .as_str()
         .and_then(|value| value.parse().ok())
+        .or_else(|| {
+            stream["tags"]["DURATION"]
+                .as_str()
+                .and_then(parse_clock_seconds)
+                .map(|end| end - video_start_time)
+                .filter(|value| *value > 0.0)
+        })
         .or_else(|| {
             json["format"]["duration"]
                 .as_str()
@@ -1728,6 +2433,35 @@ fn parse_video_info(json: &Value) -> Result<VideoInfo, String> {
     let has_audio = streams
         .iter()
         .any(|stream| stream["codec_type"].as_str() == Some("audio"));
+    let audio_tracks = streams
+        .iter()
+        .enumerate()
+        .filter(|(_, stream)| stream["codec_type"].as_str() == Some("audio"))
+        .map(|(position, audio)| AudioTrack {
+            index: audio["index"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(position as u32),
+            codec: audio["codec_name"].as_str().map(str::to_owned),
+            channels: audio["channels"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok()),
+            channel_layout: audio["channel_layout"].as_str().map(str::to_owned),
+            language: audio["tags"]["language"].as_str().map(str::to_owned),
+            title: audio["tags"]["title"]
+                .as_str()
+                .or_else(|| {
+                    audio["tags"]["handler_name"]
+                        .as_str()
+                        .filter(|value| !matches!(*value, "SoundHandler" | ""))
+                })
+                .map(str::to_owned),
+            start_time: finite_json_number(&audio["start_time"]).unwrap_or(0.0),
+            duration: finite_json_number(&audio["duration"]).filter(|v| *v > 0.0),
+            default: audio["disposition"]["default"].as_u64() == Some(1),
+            forced: audio["disposition"]["forced"].as_u64() == Some(1),
+        })
+        .collect();
 
     Ok(VideoInfo {
         width,
@@ -1740,7 +2474,138 @@ fn parse_video_info(json: &Value) -> Result<VideoInfo, String> {
         color_space: stream["color_space"].as_str().map(str::to_owned),
         color_primaries: stream["color_primaries"].as_str().map(str::to_owned),
         sample_aspect_ratio,
+        video_start_time,
+        audio_tracks,
     })
+}
+
+fn finite_json_number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|v| v.parse().ok()))
+        .filter(|v| v.is_finite())
+}
+
+fn parse_clock_seconds(value: &str) -> Option<f64> {
+    let parts: Vec<_> = value.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let result = parts[0].parse::<f64>().ok()? * 3600.0
+        + parts[1].parse::<f64>().ok()? * 60.0
+        + parts[2].parse::<f64>().ok()?;
+    result.is_finite().then_some(result)
+}
+
+fn audio_finish_filter(
+    source: &VideoInfo,
+    audio: &AudioTrack,
+    speed: f64,
+    output_duration: f64,
+) -> String {
+    let skip = (source.video_start_time - audio.start_time).max(0.0);
+    let delay = (audio.start_time - source.video_start_time).max(0.0);
+    let mut filter = format!(
+        "asetpts=PTS-STARTPTS,atrim=start={skip:.9}:duration={:.9},asetpts=PTS-STARTPTS",
+        source.duration
+    );
+    if delay > 0.000001 {
+        filter.push_str(&format!(",adelay={:.6}:all=1", delay * 1000.0));
+    }
+    if (speed - 1.0).abs() > f64::EPSILON {
+        filter.push_str(&format!(",rubberband=tempo={speed}:pitch=1.0"));
+    }
+    filter.push_str(&format!(
+        ",apad,atrim=duration={output_duration:.9},asetpts=N/SR/TB"
+    ));
+    filter
+}
+
+#[allow(clippy::too_many_arguments)] // Finishing uses the frozen media/job contract.
+async fn finish_smoothie_audio(
+    input: &str,
+    video: &Path,
+    ffmpeg: &Path,
+    info: &VideoInfo,
+    speed: f64,
+    output_frames: u64,
+    output_fps: u32,
+    job: &JobGuard<'_>,
+) -> Result<PathBuf, String> {
+    if !info.has_audio {
+        return Ok(video.to_path_buf());
+    }
+    let output = video.with_file_name("finished.mp4");
+    let duration = output_frames as f64 / f64::from(output_fps);
+    let mut command = Command::new(ffmpeg);
+    command
+        .args([
+            "-hide_banner",
+            "-v",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-i",
+        ])
+        .arg(video)
+        .arg("-i")
+        .arg(input)
+        .args([
+            "-map", "0:v:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-ar", "48000",
+        ]);
+    for (index, audio) in info.audio_tracks.iter().enumerate() {
+        command
+            .arg("-map")
+            .arg(format!("1:{}", audio.index))
+            .arg(format!("-filter:a:{index}"))
+            .arg(audio_finish_filter(info, audio, speed, duration));
+        for (name, value) in [("language", &audio.language), ("title", &audio.title)] {
+            if let Some(value) = value {
+                command
+                    .arg(format!("-metadata:s:a:{index}"))
+                    .arg(format!("{name}={value}"));
+            }
+        }
+        if let Some(title) = &audio.title {
+            command
+                .arg(format!("-metadata:s:a:{index}"))
+                .arg(format!("handler_name={title}"));
+        }
+        let default =
+            audio.default || (index == 0 && !info.audio_tracks.iter().any(|track| track.default));
+        let disposition = match (default, audio.forced) {
+            (true, true) => "default+forced",
+            (true, false) => "default",
+            (false, true) => "forced",
+            (false, false) => "0",
+        };
+        command
+            .arg(format!("-disposition:a:{index}"))
+            .arg(disposition);
+    }
+    command
+        .args(["-map_metadata", "-1", "-movflags", "+faststart", "-n"])
+        .arg(&output)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let child = job.spawn(&mut command)?;
+    let (status, _, stderr) = collect_job_output(child, job).await?;
+    if !status.success() {
+        return Err(format!("Audio finishing failed: {}", stderr));
+    }
+    Ok(output)
+}
+
+fn validate_tail_recovery(expected: u64, real: u64, fps: u32) -> Result<u64, String> {
+    let recovered = expected.saturating_sub(real);
+    let budget = (expected as f64 * 0.02).ceil().max(1.0).min(f64::from(fps)) as u64;
+    if real == 0 || recovered > budget {
+        return Err(format!("The render engine ended too early: {recovered} of {expected} frames would require a hold. Only a short end-of-video recovery is allowed."));
+    }
+    Ok(recovered)
 }
 
 const PREVIEW_FRAME_COUNT: usize = 8;
@@ -2287,7 +3152,7 @@ fn smoothie_overrides(
     // Smoothie's CFR reader can end before a VFR capture's declared timeline.
     // Clone only the last available frame, bounded by the planned output frame count.
     let tail_filter =
-        format!(",fps={output_fps},tpad=stop_mode=clone:stop=-1,trim=end_frame={output_frames}");
+        format!(",fps={output_fps},showinfo@cia_real=checksum=0,tpad=stop_mode=clone:stop=-1,trim=end_frame={output_frames}");
     let audio_speed = if (speed - 1.0).abs() > f64::EPSILON {
         format!("rubberband=tempo={speed}:pitch=1.0,")
     } else {
@@ -2295,7 +3160,7 @@ fn smoothie_overrides(
     };
     // Audio is independently bounded; a short video must not cut off the original audio.
     let audio_filter = format!(" -af {audio_speed}apad,atrim=duration={output_duration}");
-    result.push(format!("output;enc args;-vf setsar={sar}{speed_filters}{tail_filter} {video_args}{audio_filter} -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000 -movflags +faststart"));
+    result.push(format!("output;enc args;-loglevel info -vf setsar={sar}{speed_filters}{tail_filter} {video_args}{audio_filter} -pix_fmt yuv420p -c:a aac -b:a 320k -ar 48000 -movflags +faststart"));
     Ok(result)
 }
 
@@ -2314,6 +3179,39 @@ fn validate_output_info(
     }
     if source.has_audio && !info.has_audio {
         return Err("The rendered output lost its audio stream".to_string());
+    }
+    if source.has_audio {
+        if info.audio_tracks.len() != source.audio_tracks.len() {
+            return Err("The rendered output changed the number of audio tracks".into());
+        }
+        for (index, (original, output)) in source
+            .audio_tracks
+            .iter()
+            .zip(&info.audio_tracks)
+            .enumerate()
+        {
+            if original.channels.is_some() && original.channels != output.channels {
+                return Err("The rendered output changed an audio channel count".into());
+            }
+            if original.language.is_some() && original.language != output.language {
+                return Err("The rendered output lost an audio language tag".into());
+            }
+            if original.title.is_some() && original.title != output.title {
+                return Err("The rendered output lost an audio track title".into());
+            }
+            let expected_default = original.default
+                || (index == 0 && !source.audio_tracks.iter().any(|track| track.default));
+            if output.default != expected_default || output.forced != original.forced {
+                return Err("The rendered audio playback flags changed unexpectedly".into());
+            }
+            if output.start_time.abs() > 0.060
+                || output
+                    .duration
+                    .is_some_and(|value| (value - duration).abs() > 0.080_f64.max(2.0 / fps))
+            {
+                return Err("The rendered audio timeline differs from the video".into());
+            }
+        }
     }
     let source_sar = positive_aspect_ratio(&source.sample_aspect_ratio).unwrap_or(1.0);
     let output_sar = positive_aspect_ratio(&info.sample_aspect_ratio).unwrap_or(1.0);
@@ -2355,10 +3253,48 @@ async fn validate_output(
     ensure_nonempty_file(path, "Rendered")?;
     job.check_cancelled()?;
     let info = probe_video_impl(&path.to_string_lossy(), ffprobe, Some(job)).await?;
-    validate_output_info(&info, source, duration, fps, frames)
+    validate_output_info(&info, source, duration, fps, frames)?;
+    if let Some(expected) = frames {
+        if info.frame_count.is_none() {
+            let mut command = Command::new(ffprobe);
+            command
+                .args([
+                    "-v",
+                    "error",
+                    "-count_frames",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=nb_read_frames",
+                    "-of",
+                    "json",
+                ])
+                .arg(path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            #[cfg(target_os = "windows")]
+            command.creation_flags(CREATE_NO_WINDOW);
+            let child = job.spawn(&mut command)?;
+            let (status, stdout, stderr) = collect_job_output(child, job).await?;
+            let value: Value = serde_json::from_str(&stdout)
+                .map_err(|_| "Decoded frame verification returned invalid data")?;
+            let actual = value["streams"][0]["nb_read_frames"]
+                .as_str()
+                .and_then(|n| n.parse::<u64>().ok());
+            if !status.success() || !stderr.is_empty() || actual != Some(expected) {
+                return Err(
+                    "The decoded output frame count does not match the planned result".into(),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
-fn reserve_output_path(preferred: &Path) -> Result<OutputReservation, String> {
+fn reserve_output_path(
+    preferred: &Path,
+    _recovery_root: Option<&Path>,
+) -> Result<OutputReservation, String> {
     let parent = preferred.parent().unwrap_or_else(|| Path::new(""));
     let stem = preferred
         .file_stem()
@@ -2385,16 +3321,30 @@ fn reserve_output_path(preferred: &Path) -> Result<OutputReservation, String> {
         let lock = parent.join(lock_name);
 
         match OpenOptions::new().write(true).create_new(true).open(&lock) {
-            Ok(_) => {
+            Ok(mut lock_file) => {
                 if output.exists() {
+                    drop(lock_file);
                     let _ = fs::remove_file(&lock);
                     continue;
                 }
+                #[cfg(target_os = "windows")]
+                let journal = _recovery_root.and_then(|root| {
+                    match output_recovery::register(root, &mut lock_file, &output, &lock) {
+                        Ok(journal) => Some(journal),
+                        Err(error) => {
+                            eprintln!("Crash lock recovery unavailable for this output: {error}");
+                            None
+                        }
+                    }
+                });
+                drop(lock_file);
                 return Ok(OutputReservation {
                     output,
                     lock,
                     work_directory: None,
                     process_owner: None,
+                    #[cfg(target_os = "windows")]
+                    journal,
                 });
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
@@ -2411,8 +3361,10 @@ fn reserve_output_path(preferred: &Path) -> Result<OutputReservation, String> {
 }
 
 #[tauri::command]
-fn get_runtime_snapshot(app: tauri::AppHandle) -> RuntimeSnapshot {
-    runtime_snapshot(&app)
+async fn get_runtime_snapshot(app: tauri::AppHandle) -> Result<RuntimeSnapshot, String> {
+    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2421,22 +3373,28 @@ fn get_app_version(app: tauri::AppHandle) -> String {
 }
 
 #[tauri::command]
-fn save_runtime_config(
+async fn save_runtime_config(
     app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
     config: RuntimeConfig,
 ) -> Result<RuntimeSnapshot, String> {
+    ensure_idle(&registry)?;
     let config = normalize_config(config);
+    runtime_health::invalidate();
     write_config(&app, &config)?;
-    Ok(runtime_snapshot(&app))
+    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn save_ui_preferences(
+async fn save_ui_preferences(
     app: tauri::AppHandle,
     auto_render: bool,
     rife_settings: Value,
     smoothie_settings: Value,
 ) -> Result<RuntimeSnapshot, String> {
+    validate_ui_settings(&rife_settings, &smoothie_settings)?;
     update_config(&app, |config| {
         config.ui = UiSettings {
             migrated: true,
@@ -2445,7 +3403,161 @@ fn save_ui_preferences(
             smoothie_settings,
         };
     })?;
-    Ok(runtime_snapshot(&app))
+    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn ensure_idle(registry: &JobRegistry) -> Result<(), String> {
+    if !registry
+        .jobs
+        .lock()
+        .map_err(|_| "Operation registry is unavailable")?
+        .is_empty()
+    {
+        return Err(
+            "Wait for the active operation to finish before changing runtime configuration.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_ui_settings(rife: &Value, smoothie: &Value) -> Result<(), String> {
+    for (settings, label) in [(rife, "RIFE"), (smoothie, "Render")] {
+        if !settings.is_object() {
+            return Err(format!("{label} settings must be an object"));
+        }
+    }
+    let number =
+        |settings: &Value, key: &str, low: f64, high: f64, integer: bool| -> Result<(), String> {
+            if let Some(value) = settings.get(key) {
+                let v = value
+                    .as_f64()
+                    .filter(|v| {
+                        v.is_finite() && (low..=high).contains(v) && (!integer || v.fract() == 0.0)
+                    })
+                    .ok_or_else(|| format!("{key} must be from {low} to {high}"))?;
+                let _ = v;
+            }
+            Ok(())
+        };
+    number(rife, "factor", 2.0, 10.0, true)?;
+    number(rife, "crf", 0.0, 51.0, true)?;
+    number(smoothie, "fps", 1.0, 480.0, true)?;
+    number(smoothie, "speed", 0.5, 2.0, false)?;
+    number(smoothie, "blendIntensity", 0.0, 4.0, false)?;
+    for key in ["brightness", "saturation", "contrast"] {
+        number(smoothie, key, 0.0, 2.0, false)?;
+    }
+    number(smoothie, "lutOpacity", 0.0, 1.0, false)?;
+    for (settings, key, allowed) in [
+        (rife, "mode", &["boost", "slowmo"][..]),
+        (rife, "precision", &["fp32", "fp16"][..]),
+        (rife, "encoder", &["libx264", "h264_nvenc"][..]),
+        (smoothie, "encoder", &["libx264", "h264_nvenc"][..]),
+        (smoothie, "lutEnabled", &["yes", "no"][..]),
+        (smoothie, "borderless", &["yes", "no"][..]),
+        (
+            rife,
+            "preset",
+            &[
+                "ultrafast",
+                "superfast",
+                "veryfast",
+                "faster",
+                "fast",
+                "medium",
+                "slow",
+                "slower",
+                "veryslow",
+            ][..],
+        ),
+    ] {
+        if let Some(value) = settings.get(key) {
+            if !value.as_str().is_some_and(|text| allowed.contains(&text)) {
+                return Err(format!("Invalid {key}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_runtime_config(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    scope: String,
+) -> Result<RuntimeSnapshot, String> {
+    ensure_idle(&registry)?;
+    if !matches!(scope.as_str(), "rife" | "all") {
+        return Err("Unsupported reset scope".into());
+    }
+    let mut config = match load_config(&app) {
+        Ok(config) => config,
+        Err(_) => {
+            let path = config_path(&app)?;
+            if path.is_file() {
+                let backup = path.with_file_name(format!(
+                    "config-recovery-{}.json",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                fs::copy(&path, backup).map_err(|error| {
+                    format!("Unable to preserve the invalid configuration: {error}")
+                })?;
+            }
+            RuntimeConfig::default()
+        }
+    };
+    config.rife = RifeConfig::default();
+    if scope == "all" {
+        config.smoothie = SmoothieConfig::default();
+        config.media_tools = MediaToolsConfig::default();
+    }
+    write_config(&app, &config)?;
+    runtime_health::invalidate();
+    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn begin_app_update(registry: tauri::State<JobRegistry>) -> Result<(), String> {
+    let mut jobs = registry
+        .jobs
+        .lock()
+        .map_err(|_| "Operation registry is unavailable")?;
+    if !jobs.is_empty() {
+        return Err(
+            "An operation is running. Finish or cancel it before installing an update.".into(),
+        );
+    }
+    jobs.insert(
+        "app-update".into(),
+        RenderJob {
+            process_id: None,
+            owner: None,
+            paused: false,
+            cancel_requested: false,
+            last_activity: std::time::Instant::now(),
+            progress_frame: 0,
+        },
+    );
+    drop(jobs);
+    registry.cancel_all_previews();
+    Ok(())
+}
+
+#[tauri::command]
+fn end_app_update(registry: tauri::State<JobRegistry>) -> Result<(), String> {
+    registry
+        .jobs
+        .lock()
+        .map_err(|_| "Operation registry is unavailable")?
+        .remove("app-update");
+    Ok(())
 }
 
 #[tauri::command]
@@ -2480,28 +3592,14 @@ async fn analyze_video(app: tauri::AppHandle, video_path: String) -> Result<Vide
 async fn install_rife_environment(
     app: tauri::AppHandle,
     registry: tauri::State<'_, JobRegistry>,
+    repair: Option<bool>,
 ) -> Result<RuntimeSnapshot, String> {
     let job = JobGuard::reserve(&registry, "install-rife")?;
-    let configured = normalize_config(load_config(&app)?);
-    if rife_runtime(&configured, &app).is_ok() {
+    let configured = effective_config(&app, load_config(&app)?);
+    if !repair.unwrap_or(false) && probe_rife_health(&app, &configured, true).ready() {
         let _ = app.emit(
             "live-log",
             "[cia render] A configured RIFE environment is already ready.",
-        );
-        return Ok(runtime_snapshot(&app));
-    }
-
-    let detected = auto_detect_config();
-    let mut adopted = configured.clone();
-    adopted.rife = detected.rife;
-    let adopted = normalize_config(adopted);
-    if rife_runtime(&adopted, &app).is_ok() {
-        update_config(&app, |config| {
-            config.rife = adopted.rife;
-        })?;
-        let _ = app.emit(
-            "live-log",
-            "[cia render] A complete local RIFE runtime was detected and is now in use.",
         );
         return Ok(runtime_snapshot(&app));
     }
@@ -2526,8 +3624,16 @@ async fn install_rife_environment(
         .arg(&bootstrap)
         .arg("-RuntimeRoot")
         .arg(&root)
+        .arg("-HealthScript")
+        .arg(
+            bundled_resource(&app, "runtime_health.py")
+                .ok_or("The bundled RIFE verifier is missing")?,
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if repair.unwrap_or(false) {
+        command.arg("-ForceRepair");
+    }
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
 
@@ -2545,7 +3651,7 @@ async fn install_rife_environment(
     let output_task = tokio::spawn(async move { pump(stdout, output_app).await });
     let error_task = tokio::spawn(async move { pump_and_collect(stderr, error_app).await });
     let _pumps = PumpTaskGuard(vec![output_task.abort_handle(), error_task.abort_handle()]);
-    let status = child.wait().await.map_err(|error| error.to_string())?;
+    let status = wait_for_job(&mut child, &job).await?;
     if status.success() {
         job.wait_for_descendants().await?;
     } else {
@@ -2558,19 +3664,12 @@ async fn install_rife_environment(
         return Err(rife_install_failure(&stderr_lines, &status.to_string()));
     }
 
-    let installed_rife = RifeConfig {
-        python_executable: path_text(Some(root.join("venv").join("Scripts").join("python.exe"))),
-        script: None,
-        directory: path_text(Some(root.join("Practical-RIFE"))),
-        model_file: path_text(Some(
-            root.join("Practical-RIFE")
-                .join("train_log")
-                .join("flownet.pkl"),
-        )),
-    };
+    let installed_rife = managed_rife_config(&app)?
+        .ok_or("The installer did not activate a verified runtime generation")?;
     let mut validation_config = load_config(&app)?;
     validation_config.rife = installed_rife.clone();
     rife_runtime(&normalize_config(validation_config), &app)?;
+    runtime_health::invalidate();
     update_config(&app, |config| {
         config.rife = installed_rife;
     })?;
@@ -2598,51 +3697,75 @@ fn rife_install_failure(stderr_lines: &[String], status: &str) -> String {
 }
 
 #[tauri::command]
-fn pause_render(job_id: String, registry: tauri::State<JobRegistry>) -> Result<(), String> {
-    let job = running_job(&registry, &job_id)?;
+fn pause_render(
+    job_id: String,
+    registry: tauri::State<JobRegistry>,
+) -> Result<RenderControlState, String> {
+    let mut jobs = registry
+        .jobs
+        .lock()
+        .map_err(|_| "Render job registry is unavailable")?;
+    let job = jobs
+        .get_mut(&job_id)
+        .ok_or("The render job is no longer running")?;
+    if job.cancel_requested {
+        return Err("CIA_RENDER_CANCELLED".into());
+    }
     if job.paused {
-        return Ok(());
+        return Ok(RenderControlState {
+            job_id,
+            paused: true,
+        });
     }
     #[cfg(target_os = "windows")]
-    process_control::set_process_tree_paused(
-        job.process_id.ok_or("The render job is still preparing")?,
-        true,
-    )?;
+    job.owner
+        .as_ref()
+        .ok_or("The render job is still preparing")?
+        .set_paused(true)?;
     #[cfg(not(target_os = "windows"))]
     return Err("Pause is currently supported on Windows only".to_string());
 
-    let mut jobs = registry
-        .jobs
-        .lock()
-        .map_err(|_| "Render job registry is unavailable")?;
-    if let Some(entry) = jobs.get_mut(&job_id) {
-        entry.paused = true;
-    }
-    Ok(())
+    job.paused = true;
+    Ok(RenderControlState {
+        job_id,
+        paused: true,
+    })
 }
 
 #[tauri::command]
-fn resume_render(job_id: String, registry: tauri::State<JobRegistry>) -> Result<(), String> {
-    let job = running_job(&registry, &job_id)?;
-    if !job.paused {
-        return Ok(());
-    }
-    #[cfg(target_os = "windows")]
-    process_control::set_process_tree_paused(
-        job.process_id.ok_or("The render job is still preparing")?,
-        false,
-    )?;
-    #[cfg(not(target_os = "windows"))]
-    return Err("Resume is currently supported on Windows only".to_string());
-
+fn resume_render(
+    job_id: String,
+    registry: tauri::State<JobRegistry>,
+) -> Result<RenderControlState, String> {
     let mut jobs = registry
         .jobs
         .lock()
         .map_err(|_| "Render job registry is unavailable")?;
-    if let Some(entry) = jobs.get_mut(&job_id) {
-        entry.paused = false;
+    let job = jobs
+        .get_mut(&job_id)
+        .ok_or("The render job is no longer running")?;
+    if job.cancel_requested {
+        return Err("CIA_RENDER_CANCELLED".into());
     }
-    Ok(())
+    if !job.paused {
+        return Ok(RenderControlState {
+            job_id,
+            paused: false,
+        });
+    }
+    #[cfg(target_os = "windows")]
+    job.owner
+        .as_ref()
+        .ok_or("The render job is still preparing")?
+        .set_paused(false)?;
+    #[cfg(not(target_os = "windows"))]
+    return Err("Resume is currently supported on Windows only".to_string());
+
+    job.paused = false;
+    Ok(RenderControlState {
+        job_id,
+        paused: false,
+    })
 }
 
 #[tauri::command]
@@ -2686,18 +3809,37 @@ async fn run_time_remap(
     let precision = precision.unwrap_or_else(|| "fp32".to_string());
     let encoder = encoder.unwrap_or_else(|| "libx264".to_string());
     validate_rife_options(&mode, factor, crf, &preset, &precision, &encoder)?;
-    let config = load_config(&app)?;
+    let config = effective_config(&app, load_config(&app)?);
     let runtime = rife_runtime(&config, &app)?;
+    let health = probe_rife_health(&app, &config, false);
+    if !health.ready() {
+        return Err(health.detail);
+    }
     let info = probe_video_impl(&video_path, &runtime.media.ffprobe, Some(&job)).await?;
     validate_delivery_source(&info)?;
-    let mut reservation =
-        reserve_output_path(&rife_output_path(&video_path, &mode, factor, info.fps)?)?;
+    preflight_encoder(&runtime.media.ffmpeg, &encoder, &info, &job).await?;
+    let mut reservation = reserve_output_path(
+        &rife_output_path(&video_path, &mode, factor, info.fps)?,
+        Some(
+            &app.path()
+                .app_local_data_dir()
+                .map_err(|error| error.to_string())?
+                .join("recovery"),
+        ),
+    )?;
     let work_directory = reservation.prepare_work_directory()?;
     let out_path = work_directory.join("output.mp4");
 
     let mut command = Command::new(&runtime.python);
     command.current_dir(strip_unc_path(&runtime.directory));
-    command.env("PYTHONUNBUFFERED", "1");
+    command
+        .args(["-I", "-X", "utf8", "-u"])
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONIOENCODING");
+    if let Some(index) = runtime_health::selected_gpu(&runtime.directory) {
+        command.env("CUDA_VISIBLE_DEVICES", index);
+    }
 
     if let Some(ffmpeg_dir) = runtime.media.ffmpeg.parent() {
         let clean_ffmpeg_dir = strip_unc_path(ffmpeg_dir);
@@ -2739,6 +3881,14 @@ async fn run_time_remap(
         .arg(strip_unc_path(&runtime.directory))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let manifest = runtime
+        .directory
+        .parent()
+        .unwrap_or(&runtime.directory)
+        .join("runtime-manifest.json");
+    if manifest.is_file() {
+        command.arg("--runtime-manifest").arg(manifest);
+    }
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
 
@@ -2755,7 +3905,7 @@ async fn run_time_remap(
     let error_task =
         tokio::spawn(async move { pump_render(stderr, error_app, error_job_id).await });
     let _pumps = PumpTaskGuard(vec![output_task.abort_handle(), error_task.abort_handle()]);
-    let status = child.wait().await.map_err(|error| error.to_string())?;
+    let status = wait_for_job(&mut child, &job).await?;
     if status.success() {
         job.wait_for_descendants().await?;
     } else {
@@ -2827,6 +3977,13 @@ async fn run_smoothie(
     validate_delivery_source(&info)?;
     let encoder = encoder.unwrap_or_else(|| "libx264".to_string());
     let speed = speed.unwrap_or(1.0);
+    preflight_encoder(
+        &runtime.ffmpeg_directory.join("ffmpeg.exe"),
+        &encoder,
+        &info,
+        &job,
+    )
+    .await?;
     let mut overrides = smoothie_overrides(
         overrides,
         output_fps,
@@ -2838,7 +3995,25 @@ async fn run_smoothie(
     )?;
     validate_smoothie_lut_source(&info, &overrides)?;
     preserve_smoothie_color_metadata(&mut overrides, &info);
-    let mut reservation = reserve_output_path(&smoothie_output_path(&video_path, output_fps)?)?;
+    if info.has_audio {
+        // Finish every original audio track once after the video engine. The
+        // first pass has no audio, avoiding its implicit single-track selection.
+        if let Some(arguments) = overrides
+            .iter_mut()
+            .find(|v| v.starts_with("output;enc args;"))
+        {
+            arguments.push_str(" -an");
+        }
+    }
+    let mut reservation = reserve_output_path(
+        &smoothie_output_path(&video_path, output_fps)?,
+        Some(
+            &app.path()
+                .app_local_data_dir()
+                .map_err(|error| error.to_string())?
+                .join("recovery"),
+        ),
+    )?;
     let work_directory = reservation.prepare_work_directory()?;
     let out_path = work_directory.join("output.mp4");
     let out_path_text = out_path.to_string_lossy().to_string();
@@ -2857,8 +4032,7 @@ async fn run_smoothie(
         .arg("-o")
         .arg(&out_path_text)
         .arg("--recipe")
-        .arg(&runtime.recipe)
-        .arg("--progress");
+        .arg(&runtime.recipe);
     if !overrides.is_empty() {
         command.arg("--override");
         for override_value in &overrides {
@@ -2888,7 +4062,7 @@ async fn run_smoothie(
     let error_task =
         tokio::spawn(async move { pump_render(stderr, error_app, error_job_id).await });
     let _pumps = PumpTaskGuard(vec![output_task.abort_handle(), error_task.abort_handle()]);
-    let status = child.wait().await.map_err(|error| error.to_string())?;
+    let status = wait_for_job(&mut child, &job).await?;
     if status.success() {
         job.wait_for_descendants().await?;
     } else {
@@ -2899,8 +4073,39 @@ async fn run_smoothie(
     job.check_cancelled()?;
 
     if status.success() {
-        validate_output(
+        let planned_frames = smoothie_output_frames(info.duration, output_fps, speed)?;
+        let real_frames = stderr_lines.iter().rev().find_map(|line| line.strip_prefix("CIA_SMOOTHIE_REAL_FRAMES ").and_then(|v| v.parse::<u64>().ok()))
+            .ok_or("The render engine did not provide its real-frame verification. No output was published.")?;
+        let recovered = validate_tail_recovery(planned_frames, real_frames, output_fps)?;
+        if recovered > 0 {
+            emit_log(
+                &app,
+                Some(&job_id),
+                &format!(
+                    "[cia render] RECOVERED_TAIL frames={recovered} seconds={:.6}",
+                    recovered as f64 / f64::from(output_fps)
+                ),
+            );
+        }
+        emit_log(
+            &app,
+            Some(&job_id),
+            "[cia render] Verifying all original audio tracks",
+        );
+        let ffmpeg = runtime.ffmpeg_directory.join("ffmpeg.exe");
+        let finished = finish_smoothie_audio(
+            &video_path,
             &out_path,
+            &ffmpeg,
+            &info,
+            speed,
+            planned_frames,
+            output_fps,
+            &job,
+        )
+        .await?;
+        validate_output(
+            &finished,
             &runtime.ffprobe,
             &info,
             info.duration / speed,
@@ -2910,7 +4115,7 @@ async fn run_smoothie(
         )
         .await?;
         job.check_cancelled()?;
-        reservation.publish(&out_path)
+        reservation.publish(&finished)
     } else {
         let detail = stderr_lines
             .last()
@@ -2979,17 +4184,48 @@ fn open_about_link(url: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    // WebView2's host options must explicitly enable the local test endpoint.
+    // Ordinary launches keep the production browser settings and CSP intact.
+    #[cfg(target_os = "windows")]
+    if env::var("TAURI_WEBVIEW_AUTOMATION").as_deref() == Ok("true") {
+        if let Some(port) = env::var("CIA_RENDER_AUTOMATION_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+        {
+            for window in &mut context.config_mut().app.windows {
+                window.additional_browser_args = Some(format!("--remote-debugging-port={port} --remote-debugging-address=127.0.0.1 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+            }
+        }
+    }
     let mut builder = tauri::Builder::default();
 
     #[cfg(desktop)]
     {
         builder = builder
+            .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }))
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
     }
 
     builder
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Ok(root) = app.path().app_local_data_dir() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let report = output_recovery::recover_stale(&root.join("recovery"));
+                    if report.recovered > 0 {
+                        emit_log(&handle, None, &format!("[cia render] Recovered {} interrupted output reservations; {} unverified records retained.", report.recovered, report.retained));
+                    }
+                });
+            }
             #[cfg(desktop)]
             {
                 if let (Some(window), Some(icon)) =
@@ -3014,6 +4250,9 @@ pub fn run() {
             get_app_version,
             save_runtime_config,
             save_ui_preferences,
+            reset_runtime_config,
+            begin_app_update,
+            end_app_update,
             pick_runtime_path,
             analyze_video,
             generate_video_preview_set,
@@ -3030,7 +4269,7 @@ pub fn run() {
             open_target_folder,
             open_about_link
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building cia render")
         .run(|app, event| {
             if matches!(
@@ -3123,7 +4362,7 @@ mod tests {
         std::fs::write(&preferred, b"already rendered").unwrap();
         std::fs::write(&first_numbered, b"already rendered again").unwrap();
 
-        let reservation = reserve_output_path(&preferred).unwrap();
+        let reservation = reserve_output_path(&preferred, None).unwrap();
         assert_eq!(
             reservation.output,
             directory.join("cutshirlery_render30fps (2).mp4")
@@ -3136,34 +4375,31 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
-    fn sleeping_process(seconds: u32) -> std::process::Child {
-        use std::os::windows::process::CommandExt;
-
-        std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!("Start-Sleep -Seconds {seconds}"),
-            ])
-            .creation_flags(super::CREATE_NO_WINDOW)
-            .spawn()
+    fn sleeping_process(
+        seconds: u32,
+    ) -> (std::process::Child, super::process_control::ProcessOwner) {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            &format!("Start-Sleep -Seconds {seconds}"),
+        ]);
+        super::process_control::spawn_std_owned(&mut command)
             .expect("start controlled test process")
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn pause_and_resume_controls_a_live_process() {
-        let mut child = sleeping_process(2);
+        let (mut child, owner) = sleeping_process(2);
         std::thread::sleep(std::time::Duration::from_millis(120));
-        super::process_control::set_process_tree_paused(child.id(), true)
-            .expect("pause live process tree");
+        owner.set_paused(true).expect("pause live process tree");
         std::thread::sleep(std::time::Duration::from_millis(2200));
         assert!(
             child.try_wait().expect("inspect paused process").is_none(),
             "the paused process should not complete while suspended"
         );
-        super::process_control::set_process_tree_paused(child.id(), false)
-            .expect("resume live process tree");
+        owner.set_paused(false).expect("resume live process tree");
         assert!(child.wait().expect("wait resumed process").success());
     }
 
@@ -3184,7 +4420,7 @@ mod tests {
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();
             let descendant: u32 = line.trim().parse().expect("descendant PID");
-            super::process_control::set_process_tree_paused(child.id().unwrap(), true).unwrap();
+            owner.set_paused(true).unwrap();
             owner.terminate();
             assert!(!child.wait().await.unwrap().success());
             assert!(!process_is_running(descendant), "owned descendant must be terminated even while paused");
@@ -3421,7 +4657,7 @@ mod tests {
 
     #[test]
     fn output_validation_rejects_truncation_missing_audio_wrong_geometry_and_cadence() {
-        let source = super::parse_video_info(&serde_json::json!({"streams": [{"codec_type": "video", "width": 320, "height": 200, "avg_frame_rate": "30/1", "r_frame_rate": "30/1", "duration": "1", "nb_frames": "30", "sample_aspect_ratio": "4:3"}, {"codec_type": "audio"}]})).unwrap();
+        let source = super::parse_video_info(&serde_json::json!({"streams": [{"codec_type": "video", "width": 320, "height": 200, "avg_frame_rate": "30/1", "r_frame_rate": "30/1", "duration": "1", "nb_frames": "30", "sample_aspect_ratio": "4:3"}, {"codec_type": "audio", "disposition": {"default": 1}}]})).unwrap();
         assert!(super::validate_output_info(&source, &source, 1.0, 30.0, Some(30)).is_ok());
         let mut invalid = source.clone();
         invalid.duration = 0.8;
@@ -3458,7 +4694,7 @@ mod tests {
         ));
         std::fs::create_dir(&directory).unwrap();
         let preferred = directory.join("final.mp4");
-        let mut reservation = super::reserve_output_path(&preferred).unwrap();
+        let mut reservation = super::reserve_output_path(&preferred, None).unwrap();
         let work = reservation.prepare_work_directory().unwrap();
         let output = work.join("output.mp4");
         std::fs::write(&output, b"rendered").unwrap();
@@ -3539,22 +4775,25 @@ mod tests {
             for (case, input, brightness, lut_enabled, speed) in [("neutral", &source, "1.0", false, 1.0), ("grade", &source, "1.2", false, 1.0), ("grade-lut", &source, "1.2", true, 1.0), ("untagged-grade", &untagged_source, "1.2", false, 1.0), ("speed-up", &source, "1.0", false, 1.07), ("speed-down", &source, "1.0", false, 0.8), ("speed-no-audio", &silent_source, "1.0", false, 1.07)] {
                 let source_info = super::probe_video(&input.to_string_lossy(), &ffprobe).await.unwrap();
                 let job = super::JobGuard::reserve(&registry, case).unwrap();
-                let mut reservation = super::reserve_output_path(&preferred).unwrap();
+                let mut reservation = super::reserve_output_path(&preferred, None).unwrap();
                 let work = reservation.prepare_work_directory().unwrap();
                 let output = work.join("output.mp4");
                 let mut overrides = super::smoothie_overrides(vec![format!("color grading;brightness;{brightness}"), "color grading;saturation;1.0".to_string(), "color grading;contrast;1.0".to_string(), format!("lut;enabled;{}", if lut_enabled { "yes" } else { "no" }), "lut;opacity;1.0".to_string(), "frame blending;intensity;1.0".to_string()], 30, "libx264", Some(&lut), &source_info.sample_aspect_ratio, speed, source_info.duration).unwrap();
                 super::validate_smoothie_lut_source(&source_info, &overrides).unwrap();
                 super::preserve_smoothie_color_metadata(&mut overrides, &source_info);
+                if source_info.has_audio { overrides.iter_mut().find(|value| value.starts_with("output;enc args;")).unwrap().push_str(" -an"); }
                 let inherited_path = std::env::var_os("PATH").unwrap_or_default();
                 let scoped_path = std::env::join_paths(std::iter::once(ffmpeg.parent().unwrap().to_path_buf()).chain(std::env::split_paths(&inherited_path))).unwrap();
                 let mut command = super::Command::new(&smoothie);
-                command.current_dir(&smoothie_root).env("PATH", scoped_path).arg("-i").arg(input).arg("-o").arg(&output).arg("--recipe").arg(smoothie_root.join("recipe.ini")).arg("--progress").arg("--override").args(&overrides).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+                command.current_dir(&smoothie_root).env("PATH", scoped_path).arg("-i").arg(input).arg("-o").arg(&output).arg("--recipe").arg(smoothie_root.join("recipe.ini")).arg("--override").args(&overrides).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
                 let child = job.spawn(&mut command).unwrap();
                 reservation.process_owner = super::running_job(&registry, case).unwrap().owner;
-                let result = child.wait_with_output().await.unwrap();
-                assert!(result.status.success(), "{case}: stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+                let (status, stdout, stderr) = tokio::time::timeout(std::time::Duration::from_secs(120), super::collect_job_output(child, &job)).await.expect("Smoothie fixture timed out").unwrap();
+                assert!(status.success(), "{case}: stdout: {stdout}\nstderr: {stderr}");
                 job.wait_for_descendants().await.unwrap();
-                super::validate_output(&output, &ffprobe, &source_info, source_info.duration / speed, 30.0, Some(super::smoothie_output_frames(source_info.duration, 30, speed).unwrap()), &job).await.unwrap_or_else(|error| panic!("{case}: {error}\nstdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)));
+                let frames = super::smoothie_output_frames(source_info.duration, 30, speed).unwrap();
+                let output = super::finish_smoothie_audio(&input.to_string_lossy(), &output, &ffmpeg, &source_info, speed, frames, 30, &job).await.unwrap();
+                super::validate_output(&output, &ffprobe, &source_info, frames as f64 / 30.0, 30.0, Some(frames), &job).await.unwrap_or_else(|error| panic!("{case}: {error}\nstdout: {stdout}\nstderr: {stderr}"));
                 let output_info = super::probe_video_impl(&output.to_string_lossy(), &ffprobe, Some(&job)).await.unwrap();
                 let streams = super::Command::new(&ffprobe).args(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json"]).arg(&output).output().await.unwrap();
                 assert!(streams.status.success());

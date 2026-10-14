@@ -8,6 +8,9 @@ import argparse
 from fractions import Fraction
 import importlib.util
 import json
+import os
+import array
+import hashlib
 from pathlib import Path
 import subprocess
 import struct
@@ -22,6 +25,11 @@ FFMPEG = UI / "src-tauri/resources/runtime/ffmpeg/ffmpeg.exe"
 FFPROBE = FFMPEG.with_name("ffprobe.exe")
 PYTHON = APP / "venv/Scripts/python.exe"
 RIFE = APP / "Practical-RIFE"
+MODEL = None
+MANIFEST = None
+DEVICE_INDEX = 0
+PRECISION = "fp32"
+ENCODER = "libx264"
 
 
 def load_pipeline():
@@ -31,9 +39,9 @@ def load_pipeline():
     return module
 
 
-def run(command, *, check=True, timeout=120):
+def run(command, *, check=True, timeout=120, env=None):
     result = subprocess.run([str(part) for part in command], capture_output=True,
-                            encoding="utf-8", errors="replace", timeout=timeout)
+                            encoding="utf-8", errors="replace", timeout=timeout, env=env)
     if check and result.returncode:
         raise RuntimeError(result.stderr[-6000:])
     return result
@@ -94,8 +102,8 @@ def make_cover_first(directory, source):
     return output
 
 
-def audio_packet_hashes(path):
-    result = run([FFPROBE, "-v", "error", "-select_streams", "a:0", "-show_packets",
+def audio_packet_hashes(path, index=0):
+    result = run([FFPROBE, "-v", "error", "-select_streams", f"a:{index}", "-show_packets",
                   "-show_data_hash", "sha256", "-show_entries", "packet=data_hash", "-of", "json", path])
     return [packet["data_hash"] for packet in json.loads(result.stdout).get("packets", [])]
 
@@ -126,45 +134,56 @@ class UnitContractTests(unittest.TestCase):
             with self.subTest(quality=quality), self.assertRaises(ValueError):
                 self.module.validate_options("boost", 2, quality, "fast", "fp32", "libx264")
 
-    def test_tempo_chain_matches_requested_slowdown(self):
+    def test_rubberband_matches_requested_slowdown(self):
+        track = {"start_time": 0, "duration": 1, "sample_rate": 48000}
         for factor in (2, 3, 10):
-            filters = self.module.build_atempo_filter(1 / factor)
-            product = 1.0
-            for item in filters.split(","):
-                value = float(item.split("=")[1])
-                self.assertGreaterEqual(value, 0.5)
-                self.assertLessEqual(value, 2.0)
-                product *= value
-            self.assertAlmostEqual(product, 1 / factor, places=8)
+            filters = self.module.audio_filter(track, 0, 1, factor, factor)
+            self.assertIn(f"rubberband=tempo={1 / factor:.9f}:pitch=1.0", filters)
+            self.assertNotIn("atempo", filters)
 
 
 def generate_fixture(directory, name, *, rate="24/1", frames=6, audio=False,
-                     subtitles=False, sar="1/1", transfer=None, vfr=False):
-    destination = directory / f"{name}.mp4"
+                     subtitles=False, sar="1/1", transfer=None, vfr=False,
+                     audio_tracks=0, video_offset=0, audio_offset=0, container="mp4", audio_duration=None):
+    destination = directory / f"{name}.{container}"
     duration = float(Fraction(frames) / Fraction(rate))
+    dimensions = "320x192" if ENCODER == "h264_nvenc" else "96x64"
     command = [FFMPEG, "-v", "error", "-f", "lavfi", "-i",
-               f"testsrc2=size=96x64:rate={rate}"]
-    if audio:
+               f"testsrc2=size={dimensions}:rate={rate}:duration={duration}"]
+    audio_count = audio_tracks or (1 if audio else 0)
+    for index in range(audio_count):
         command.extend(["-f", "lavfi", "-i", "sine=frequency=400:sample_rate=48000"])
+        command[-1] = f"sine=frequency={400 + index * 400}:sample_rate=48000:duration={audio_duration or duration + max(video_offset, 0)}"
     if subtitles:
         subtitle = directory / f"{name}.srt"
-        subtitle.write_text("1\n00:00:00,050 --> 00:00:00,150\nRetime this cue\n", encoding="utf-8")
+        def cue_time(value):
+            seconds, millis = divmod(round(value * 1000), 1000)
+            return f"00:00:{seconds:02},{millis:03}"
+        subtitle.write_text(f"1\n{cue_time(max(0, video_offset) + 0.05)} --> {cue_time(max(0, video_offset) + 0.15)}\nRetime this cue\n", encoding="utf-8")
         command.extend(["-i", str(subtitle)])
     command.extend(["-map", "0:v:0", "-frames:v", str(frames)])
-    if not vfr:
+    if not vfr and not video_offset and not audio_offset and not audio_duration:
         command.extend(["-t", str(duration)])
     filters = f"setsar={sar}"
+    if video_offset:
+        filters += f",setpts=PTS+({video_offset})/TB"
     if vfr:
         filters += ",setpts=PTS+if(gte(N\\,3)\\,2/(24*TB)\\,0)"
     if transfer:
         filters += f",setparams=color_primaries=bt2020:color_trc={transfer}:colorspace=bt2020nc"
     command.extend(["-vf", filters, "-c:v", "libx264", "-crf", "18", "-preset", "fast"])
-    if vfr:
+    if vfr or video_offset:
         command.extend(["-fps_mode", "vfr"])
-    if audio:
-        command.extend(["-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"])
+    for index in range(audio_count):
+        command.extend(["-map", f"{index + 1}:a:0", f"-c:a:{index}", "aac", f"-b:a:{index}", "192k",
+                        f"-metadata:s:a:{index}", f"language={'eng' if index == 0 else 'fra'}",
+                        f"-metadata:s:a:{index}", f"handler_name={'Game' if index == 0 else 'Microphone'}"])
+        if audio_offset:
+            command.extend([f"-filter:a:{index}", f"asetpts=PTS+({audio_offset})/TB"])
+        elif video_offset > 0:
+            command.extend([f"-filter:a:{index}", f"volume=if(lt(t\\,{video_offset})\\,0\\,1):eval=frame"])
     if subtitles:
-        command.extend(["-map", f"{2 if audio else 1}:s:0", "-c:s", "mov_text",
+        command.extend(["-map", f"{audio_count + 1}:s:0", "-c:s", "mov_text",
                         "-metadata:s:s:0", "language=fra"])
     if transfer:
         command.extend(["-color_trc", transfer])
@@ -200,15 +219,32 @@ def check_output(source, output, *, factor, mode, dimensions=None, sar=None, sub
         raise AssertionError("Sample aspect ratio changed")
     first_audio = [s for s in input_info["streams"] if s["codec_type"] == "audio"]
     final_audio = [s for s in output_info["streams"] if s["codec_type"] == "audio"]
-    if bool(first_audio) != bool(final_audio):
-        raise AssertionError("Audio presence changed")
-    if first_audio:
-        expected_audio = float(first_audio[0]["duration"]) * (factor if mode == "slowmo" else 1)
-        if abs(float(final_audio[0]["duration"]) - expected_audio) > 0.12:
-            raise AssertionError("Audio retiming outside 120-ms tolerance")
-        if mode == "boost" and first_audio[0]["codec_name"] == "aac":
-            if audio_packet_hashes(source) != audio_packet_hashes(output):
+    if len(first_audio) != len(final_audio):
+        raise AssertionError("Audio track count changed")
+    copied_audio = []
+    for index, (initial_audio, result_audio) in enumerate(zip(first_audio, final_audio)):
+        if abs(float(result_audio["duration"]) - expected_duration) > 0.060:
+            raise AssertionError("Audio retiming outside 60-ms tolerance")
+        if initial_audio["channels"] != result_audio["channels"]:
+            raise AssertionError("Audio channels changed")
+        initial_tags = {key.lower(): value for key, value in initial_audio.get("tags", {}).items()}
+        result_tags = {key.lower(): value for key, value in result_audio.get("tags", {}).items()}
+        for tag in ("language", "handler_name"):
+            if initial_tags.get(tag, "und" if tag == "language" else "") != result_tags.get(tag, "und" if tag == "language" else ""):
+                raise AssertionError(f"Audio {tag} changed")
+        for flag in ("default", "forced"):
+            expected_flag = bool(initial_audio.get("disposition", {}).get(flag))
+            if flag == "default" and index == 0 and not any(track.get("disposition", {}).get("default") for track in first_audio):
+                expected_flag = True
+            if expected_flag != bool(result_audio.get("disposition", {}).get(flag)):
+                raise AssertionError(f"Audio {flag} disposition changed")
+        initial_duration = float(initial_audio.get("duration", 0))
+        if mode == "boost" and initial_audio["codec_name"] == "aac" and abs(float(first.get("start_time", 0))) < 0.001 and abs(float(initial_audio.get("start_time", 0))) < 0.001 and abs(initial_duration - expected_duration) < 0.030:
+            if audio_packet_hashes(source, index) != audio_packet_hashes(output, index):
                 raise AssertionError("Compatible AAC boost audio was re-encoded or lost packets")
+            copied_audio.append(True)
+        else:
+            copied_audio.append(False)
     final_subtitles = [s for s in output_info["streams"] if s["codec_type"] == "subtitle"]
     if bool(final_subtitles) != subtitles:
         raise AssertionError("Subtitle presence changed")
@@ -223,12 +259,59 @@ def check_output(source, output, *, factor, mode, dimensions=None, sar=None, sub
          "-map", "0:a?", "-f", "null", "-"])
     return {"input_info": input_info, "output_info": output_info,
             "video_expected_duration": expected_duration,
-            "aac_packets_identical": bool(first_audio and mode == "boost" and first_audio[0]["codec_name"] == "aac")}
+            "aac_packets_identical": bool(copied_audio and all(copied_audio))}
 
 
-def integration(run_gpu, selected_cases=None):
-    directory = APP / "audit-benchmark" / f"integration-{time.time_ns()}"
+def check_audio_signal(output, case):
+    import numpy as np
+    signal_results = []
+    tracks = [stream for stream in probe(output)["streams"] if stream["codec_type"] == "audio"]
+    for index, track in enumerate(tracks):
+        # Decode binary separately from the text-oriented command helper.
+        binary = subprocess.run([str(item) for item in [FFMPEG, "-v", "error", "-i", output,
+                                 "-map", f"0:a:{index}", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"]],
+                                capture_output=True, timeout=30)
+        if binary.returncode:
+            raise AssertionError("Audio signal could not be decoded")
+        samples = array.array("f")
+        samples.frombytes(binary.stdout)
+        slowdown = case["factor"] if case["mode"] == "slowmo" else 1
+        delay = max(0, case.get("audio_offset", 0) - case.get("video_offset", 0)) * slowdown
+        if delay:
+            prefix = samples[:max(1, round(max(0, delay - 0.06) * 48000))]
+            rms = (sum(value * value for value in prefix) / len(prefix)) ** 0.5
+            if rms > 0.001:
+                raise AssertionError("Audio begins before its normalized delay")
+        begin = round((delay + 0.06) * 48000)
+        end = max(begin + 1, len(samples) - round(0.06 * 48000))
+        tone = samples[begin:end]
+        if len(tone) < 1000:
+            raise AssertionError("Fixture tone interval is too short")
+        rms = (sum(value * value for value in tone) / len(tone)) ** 0.5
+        if rms < 0.03:
+            raise AssertionError("A preserved audio track lost its signal")
+        # Time stretching can add small high-frequency zero crossings; measure
+        # the actual dominant tone rather than treating every crossing as pitch.
+        spectrum = np.abs(np.fft.rfft(np.asarray(tone) * np.hanning(len(tone))))
+        frequency = int(np.argmax(spectrum[1:])) * 48000 / len(tone) + 48000 / len(tone)
+        expected = 400 + index * 400
+        if abs(frequency - expected) > 12:
+            raise AssertionError(f"Audio track {index + 1} pitch changed: {frequency} instead of {expected}")
+        signal_results.append({"index": index, "frequency": frequency, "rms": rms, "delay": delay})
+    return signal_results
+
+
+def integration(run_gpu, selected_cases=None, output_directory=None):
+    directory = (output_directory or UI / "src-tauri/target/pipeline-integration") / f"integration-{time.time_ns()}"
     directory.mkdir(parents=True, exist_ok=False)
+    provenance = {"precision": PRECISION, "encoder": ENCODER, "device_index": DEVICE_INDEX,
+                  "source_sha256": {str(path.relative_to(UI)).replace("\\", "/"): hashlib.sha256(path.read_bytes()).hexdigest()
+                                    for path in (PIPELINE, PIPELINE.with_name("rife_worker.py"),
+                                                 PIPELINE.with_name("runtime_health.py"), Path(__file__).resolve())}}
+    if MANIFEST:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8-sig"))
+        provenance.update(profile_id=manifest.get("profileId"), runtime_manifest_sha256=hashlib.sha256(MANIFEST.read_bytes()).hexdigest())
+    (directory / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     cases = [
         {"name": "fractional [safe name]", "rate": "24000/1001", "factor": 3, "mode": "boost"},
         {"name": "audio_boost", "audio": True, "factor": 2, "mode": "boost"},
@@ -238,6 +321,16 @@ def integration(run_gpu, selected_cases=None):
         {"name": "rotation", "factor": 2, "mode": "boost"},
         {"name": "variable_rate_normalized", "vfr": True, "factor": 2, "mode": "boost"},
         {"name": "cover_first_picture", "factor": 2, "mode": "boost"},
+        {"name": "nvidia_360fps_boost", "rate": "360/1", "frames": 36, "factor": 2, "mode": "boost"},
+        {"name": "multiple_audio_boost", "audio_tracks": 2, "factor": 2, "mode": "boost"},
+        {"name": "multiple_audio_slowmo", "audio_tracks": 2, "factor": 3, "mode": "slowmo"},
+        {"name": "rubberband_extreme_slowmo", "audio": True, "factor": 10, "mode": "slowmo"},
+        {"name": "offset_video_boost", "audio": True, "video_offset": 2, "factor": 2, "mode": "boost"},
+        {"name": "offset_video_subtitles", "audio": True, "subtitles": True, "video_offset": 2, "factor": 2, "mode": "boost"},
+        {"name": "delayed_audio_slowmo", "audio": True, "audio_offset": 0.1, "factor": 2, "mode": "slowmo"},
+        {"name": "mkv_short_video_long_audio", "audio": True, "container": "mkv", "audio_duration": 3, "frames": 12, "factor": 2, "mode": "boost"},
+        {"name": "mkv_multiple_audio_titles", "audio_tracks": 2, "container": "mkv", "audio_duration": 3, "frames": 12, "factor": 2, "mode": "boost"},
+        {"name": "unicode_\u8a66\u9a13_\U0001f3ac", "audio": True, "factor": 2, "mode": "boost"},
     ]
     results = []
     for case in cases:
@@ -261,12 +354,23 @@ def integration(run_gpu, selected_cases=None):
         sentinel_bytes = b"preexisting-legacy-intermediate-do-not-touch"
         legacy_intermediate.write_bytes(sentinel_bytes)
         output = directory / f"{case['name']}-result.mp4"
-        command = [PYTHON, PIPELINE, "--video", source, "--mode", case["mode"],
+        command = [PYTHON, "-I", "-X", "utf8", PIPELINE, "--video", source, "--mode", case["mode"],
                    "--factor", case["factor"], "--crf", "18", "--preset", "fast",
-                   "--precision", "fp32", "--encoder", "libx264", "--output", output,
+                   "--precision", PRECISION, "--encoder", ENCODER, "--device-index", DEVICE_INDEX, "--output", output,
                    "--ffmpeg", FFMPEG, "--ffprobe", FFPROBE, "--rife-dir", RIFE]
+        if MODEL:
+            command.extend(["--model-dir", MODEL])
+        if MANIFEST:
+            command.extend(["--runtime-manifest", MANIFEST])
+        environment = dict(os.environ)
+        if case["name"].startswith("unicode_"):
+            foreign_packages = directory / "foreign-python-packages"
+            foreign_packages.mkdir(exist_ok=True)
+            (foreign_packages / "torch.py").write_text('raise RuntimeError("Foreign PYTHONPATH replaced managed Torch")\n', encoding="utf-8")
+            environment.update(PYTHONHOME="C:/foreign/missing-python", PYTHONPATH=str(foreign_packages),
+                               PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
         started = time.perf_counter()
-        process = run(command, check=False)
+        process = run(command, check=False, env=environment)
         log = directory / f"{case['name']}.log"
         log.write_text(process.stdout + "\n" + process.stderr, encoding="utf-8")
         row = {"case": case, "seconds": time.perf_counter() - started, "returncode": process.returncode,
@@ -277,8 +381,10 @@ def integration(run_gpu, selected_cases=None):
                 if not row["legacy_intermediate_preserved"]:
                     raise AssertionError("A preexisting historical RIFE intermediate was modified")
                 row.update(check_output(source, output, factor=case["factor"], mode=case["mode"],
-                                        dimensions=(64, 96) if case["name"] == "rotation" else None,
+                                        dimensions=((192, 320) if ENCODER == "h264_nvenc" else (64, 96)) if case["name"] == "rotation" else None,
                                         sar=case.get("sar"), subtitles=case.get("subtitles", False)))
+                if case.get("audio") or case.get("audio_tracks"):
+                    row["audio_signal"] = check_audio_signal(output, case)
                 row["status"] = "passed"
             except (AssertionError, RuntimeError) as error:
                 row["error"] = str(error)
@@ -291,13 +397,19 @@ def integration(run_gpu, selected_cases=None):
     sentinel = directory / "sentinel-result.mp4"
     sentinel.write_bytes(b"sentinel-do-not-touch")
     source = generate_fixture(directory, "reject-source")
-    base = [PYTHON, PIPELINE, "--video", source, "--mode", "boost", "--factor", "2",
+    base = [PYTHON, "-I", "-X", "utf8", PIPELINE, "--video", source, "--mode", "boost", "--factor", "2",
             "--ffmpeg", FFMPEG, "--ffprobe", FFPROBE, "--rife-dir", RIFE]
+    if MODEL:
+        base.extend(["--model-dir", MODEL])
+    if MANIFEST:
+        base.extend(["--runtime-manifest", MANIFEST])
     rejected = run([*base, "--output", sentinel], check=False)
     assert rejected.returncode != 0 and sentinel.read_bytes() == b"sentinel-do-not-touch"
     hdr = generate_fixture(directory, "reject-hdr", transfer="smpte2084")
     hdr_output = directory / "reject-hdr-result.mp4"
-    hdr_process = run([*base[:2], "--video", hdr, *base[4:], "--output", hdr_output], check=False)
+    hdr_base = list(base)
+    hdr_base[hdr_base.index("--video") + 1] = hdr
+    hdr_process = run([*hdr_base, "--output", hdr_output], check=False)
     assert hdr_process.returncode != 0 and "HDR" in hdr_process.stderr and not hdr_output.exists(), hdr_process.stderr
     results.extend([{"case": "existing-output-no-clobber", "status": "passed"},
                     {"case": "HDR-explicit-rejection", "status": "passed"}])
@@ -311,9 +423,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="Explicitly enable CUDA interpolation fixtures")
     parser.add_argument("--cases", nargs="+", help="Run only selected fixture names")
+    parser.add_argument("--python", type=Path, default=PYTHON)
+    parser.add_argument("--ffmpeg", type=Path, default=FFMPEG)
+    parser.add_argument("--ffprobe", type=Path, default=FFPROBE)
+    parser.add_argument("--rife-dir", type=Path, default=RIFE)
+    parser.add_argument("--model-dir", type=Path)
+    parser.add_argument("--runtime-manifest", type=Path)
+    parser.add_argument("--device-index", type=int, default=0)
+    parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
+    parser.add_argument("--encoder", choices=("libx264", "h264_nvenc"), default="libx264")
+    parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    PYTHON, FFMPEG, FFPROBE, RIFE, MODEL = args.python, args.ffmpeg, args.ffprobe, args.rife_dir, args.model_dir
+    MANIFEST, DEVICE_INDEX, PRECISION, ENCODER = args.runtime_manifest, args.device_index, args.precision, args.encoder
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(UnitContractTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if not result.wasSuccessful():
         raise SystemExit(1)
-    integration(args.run, args.cases)
+    integration(args.run, args.cases, args.output_dir)
