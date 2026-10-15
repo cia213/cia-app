@@ -142,6 +142,7 @@ test('setup error popup stays usable at minimum size and shares only a redacted 
   await page.evaluate(() => window.audit.reject('install_rife_environment', 'Python launch failed at C:/Users/Private Person/runtime/python.exe'));
   const dialog = page.getByRole('dialog', { name: 'SOMETHING WENT WRONG' });
   await dialog.getByRole('alert').getByText('Python launch failed at C:/Users/Private Person/runtime/python.exe', { exact: true }).waitFor();
+  assert.equal(await page.locator('.toast').count(), 0);
   await dialog.getByText('VIEW REPORT', { exact: true }).click();
   assert.doesNotMatch(await dialog.locator('pre').innerText(), /Private Person|python\.exe/);
   const report = dialog.getByRole('button', { name: 'REPORT BUG', exact: true });

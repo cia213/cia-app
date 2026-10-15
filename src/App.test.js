@@ -68,7 +68,8 @@ function makeContext(overrides = {}) {
     autoRender: false, rifeSettings: { ...rife }, smoothieSettings: { ...smoothie },
     runtimeSnapshot: { config: { rife: {}, smoothie: { lutFile: '' }, ui: {} }, rifeReady: true, smoothieReady: true, mediaToolsReady: true },
     showRifeSettings: true, showSmoothieSettings: true,
-    failureDialog: null, bugReportError: '', isOpeningBugReport: false,
+    failureDialog: null, bugReportError: '', bugReportNotice: '', isOpeningBugReport: false,
+    toast: { show: false, message: '', type: 'info' },
     notifiedRuntimeProblem: '', appVersion: '1.3.1',
     DEFAULT_RIFE: rife, DEFAULT_SMOOTHIE: smoothie,
     invoke: async (command, args) => {
@@ -572,7 +573,8 @@ test('new failures offer a frozen private report and contact GitHub only on requ
   assert.equal(calls[0].command, 'open_bug_report');
   assert.equal(calls[0].args.report, report);
   assert.doesNotMatch(calls[0].args.report, /later unrelated/);
-  assert.match(notices.at(-1).message, /Review and submit/);
+  assert.match(ctx.bugReportNotice, /Review and submit/);
+  assert.equal(notices.length, 0);
   ctx.closeFailureDialog();
   assert.equal(ctx.failureDialog, null);
 });

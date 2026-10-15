@@ -66,6 +66,7 @@
   let showSmoothieSettings = $state(false);
   let failureDialog = $state(null);
   let bugReportError = $state('');
+  let bugReportNotice = $state('');
   let isOpeningBugReport = $state(false);
   let notifiedRuntimeProblem = '';
 
@@ -192,13 +193,16 @@
     showSmoothieSettings = false;
     showRenderCancelConfirmation = false;
     showUpdateModal = false;
+    toast.show = false;
     bugReportError = '';
+    bugReportNotice = '';
     failureDialog = { kind, operation, error: String(error), report };
   }
 
   function closeFailureDialog() {
     failureDialog = null;
     bugReportError = '';
+    bugReportNotice = '';
   }
 
   async function copyBugReport() {
@@ -206,7 +210,7 @@
     try {
       await navigator.clipboard.writeText(failureDialog.report);
       bugReportError = '';
-      showToast('Bug report copied', 'success');
+      bugReportNotice = 'Report copied.';
     } catch {
       bugReportError = 'The report could not be copied. You can select it under View report.';
     }
@@ -216,9 +220,10 @@
     if (!failureDialog || isOpeningBugReport) return;
     isOpeningBugReport = true;
     bugReportError = '';
+    bugReportNotice = '';
     try {
       await invoke('open_bug_report', { report: failureDialog.report });
-      showToast('Bug report opened. Review and submit it on GitHub.', 'info');
+      bugReportNotice = 'GitHub draft opened. Review and submit it in your browser.';
     } catch {
       bugReportError = 'GitHub could not be opened. Copy the report and send it at github.com/cia213/cia-app/issues.';
     } finally { isOpeningBugReport = false; }
@@ -587,6 +592,7 @@
   let hasModal = $derived(Boolean(failureDialog) || showRifeSettings || showSmoothieSettings || showRenderCancelConfirmation || showUpdateModal);
 
   function showToast(message, type = 'info') {
+    if (failureDialog) return;
     toast = { show: true, message, type };
     setTimeout(() => { toast.show = false; }, 4000);
   }
@@ -2361,6 +2367,7 @@
             <pre>{failureDialog.report}</pre>
           </details>
           {#if bugReportError}<p class="failure-message" role="alert">{bugReportError}</p>{/if}
+          {#if bugReportNotice}<p role="status">{bugReportNotice}</p>{/if}
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" onclick={closeFailureDialog}>CLOSE</button>
