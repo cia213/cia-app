@@ -64,6 +64,10 @@
   // Drawers / Modal Overlays
   let showRifeSettings = $state(false);
   let showSmoothieSettings = $state(false);
+  let failureDialog = $state(null);
+  let bugReportError = $state('');
+  let isOpeningBugReport = $state(false);
+  let notifiedRuntimeProblem = '';
 
   // --- RIFE State & Settings ---
   let videoPath = $state('');
@@ -163,7 +167,61 @@
     return String(text)
       .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[redacted]@')
       .replace(/\bgh[pousr]_[A-Za-z0-9_]+\b/g, '[redacted token]')
-      .replace(/((?:token|password|authorization)[=:]\s*)[^\s&]+/gi, '$1[redacted]');
+      .replace(/\bgithub_pat_[A-Za-z0-9_]+\b/g, '[redacted token]')
+      .replace(/\b(Basic|Bearer)\s+[^\s"']+/gi, '$1 [redacted]')
+      .replace(/(\b(?:(?:access[_-]?|refresh[_-]?)?token|password|(?:proxy-)?authorization|api[_-]?key|secret)["']?\s*[:=]\s*)[^\r\n]*/gi, '$1[redacted]');
+  }
+
+  function redactReport(text) {
+    return redactLog(text)
+      .replace(/(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\r\n]*/g, '[local path]')
+      .replace(/\\\\[^\r\n]*/g, '[local path]')
+      .replace(/(?<![:/A-Za-z0-9])\/(?:[^/\s"'<>|]+\/)[^\r\n]*/g, '[local path]');
+  }
+
+  function openFailureDialog(kind, error, diagnostic) {
+    const operation = { rife: 'Interpolation / render', smoothie: 'Render', install: 'Interpolation setup', runtime: 'Application setup' }[kind] || 'Application';
+    const report = [
+      `cia render ${appVersion || 'unknown version'}`,
+      `Operation: ${operation}`,
+      `RIFE status: ${runtimeSnapshot?.rifeHealth?.status || 'unknown'}`,
+      '', 'Error:', redactReport(error),
+      '', 'Diagnostics:', redactReport(diagnostic).slice(-6000)
+    ].join('\n');
+    showRifeSettings = false;
+    showSmoothieSettings = false;
+    showRenderCancelConfirmation = false;
+    showUpdateModal = false;
+    bugReportError = '';
+    failureDialog = { kind, operation, error: String(error), report };
+  }
+
+  function closeFailureDialog() {
+    failureDialog = null;
+    bugReportError = '';
+  }
+
+  async function copyBugReport() {
+    if (!failureDialog) return;
+    try {
+      await navigator.clipboard.writeText(failureDialog.report);
+      bugReportError = '';
+      showToast('Bug report copied', 'success');
+    } catch {
+      bugReportError = 'The report could not be copied. You can select it under View report.';
+    }
+  }
+
+  async function reportBug() {
+    if (!failureDialog || isOpeningBugReport) return;
+    isOpeningBugReport = true;
+    bugReportError = '';
+    try {
+      await invoke('open_bug_report', { report: failureDialog.report });
+      showToast('Bug report opened. Review and submit it on GitHub.', 'info');
+    } catch {
+      bugReportError = 'GitHub could not be opened. Copy the report and send it at github.com/cia213/cia-app/issues.';
+    } finally { isOpeningBugReport = false; }
   }
 
   function loadFailure(kind) {
@@ -173,7 +231,7 @@
     } catch { return {}; }
   }
 
-  function recordFailure(kind, error) {
+  function recordFailure(kind, error, notify = true) {
     appendLog(`[cia render] ${String(error)}`);
     flushLogs();
     const diagnostic = redactLog(logs.join('\n')).slice(-128000);
@@ -185,9 +243,11 @@
       saved[kind] = { error: redactLog(error), logs: diagnostic, date: new Date().toISOString() };
       localStorage.setItem('cia_last_failures', JSON.stringify(saved));
     } catch { /* Diagnostics remain available in this window if storage is unavailable. */ }
+    if (notify) openFailureDialog(kind, error, diagnostic);
   }
 
   function clearFailure(kind) {
+    if (failureDialog?.kind === kind) closeFailureDialog();
     if (kind === 'rife') { jobError = ''; rifeFailureLogs = ''; }
     if (kind === 'smoothie') { smoothieJobError = ''; smoothieFailureLogs = ''; }
     if (kind === 'install') { rifeInstallError = ''; installFailureLogs = ''; }
@@ -202,6 +262,16 @@
     runtimeSnapshot = snapshot;
     setupDraft = cloneConfig(snapshot.config);
     runtimeError = snapshot.loadError || '';
+    notifyRuntimeProblem();
+  }
+
+  function notifyRuntimeProblem() {
+    const error = runtimeError || (activePage === 'dashboard' && runtimeSnapshot?.rifeHealth?.status === 'broken'
+      ? runtimeSnapshot.rifeHealth.detail || 'The interpolation environment could not be verified.' : '');
+    if (!error) { notifiedRuntimeProblem = ''; return; }
+    if (error === notifiedRuntimeProblem) return;
+    notifiedRuntimeProblem = error;
+    recordFailure(runtimeError ? 'runtime' : 'install', error);
   }
 
   async function persistUiPreferences() {
@@ -230,6 +300,7 @@
       return snapshot;
     } catch (error) {
       runtimeError = String(error);
+      notifyRuntimeProblem();
       throw error;
     } finally { isRuntimeLoading = false; }
   }
@@ -258,6 +329,7 @@
       showRuntimeSetup = false;
     } catch (e) {
       runtimeError = String(e);
+      notifyRuntimeProblem();
       showToast(`Runtime setup could not load: ${e}`, 'error');
       showRuntimeSetup = false;
     }
@@ -386,6 +458,7 @@
     if (!entry) return;
     const requestId = ++historyNavigationRequest;
     activePage = entry.page;
+    notifyRuntimeProblem();
 
     // Navigation owns the displayed page, never the active render or its input.
     if (anyProcessing) return;
@@ -511,7 +584,7 @@
   let canRenderSmoothie = $derived(Boolean(rifeOutputPath) && lastOutputPath === rifeOutputPath && !anyProcessing);
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
   let smoothieSliderPct = $derived(((smoothieSettings.fps - 20) / (60 - 20)) * 100);
-  let hasModal = $derived(showRifeSettings || showSmoothieSettings || showRenderCancelConfirmation || showUpdateModal);
+  let hasModal = $derived(Boolean(failureDialog) || showRifeSettings || showSmoothieSettings || showRenderCancelConfirmation || showUpdateModal);
 
   function showToast(message, type = 'info') {
     toast = { show: true, message, type };
@@ -1050,6 +1123,7 @@
       activePage = page;
       pushNavigation({ page, smoothiePath, videoPath });
     }
+    notifyRuntimeProblem();
   }
 
   function handleInstallProgress(event) {
@@ -1138,7 +1212,7 @@
     if (!videoPath || !videoInfo || anyProcessing || isLoading || isSmoothieLoading || isInstallingRifeEnvironment) return;
     if (!renderRuntimeReady || !runtimeSnapshot?.rifeReady) return;
     const invalid = settingsValidationError('rife', rifeSettings) || settingsValidationError('smoothie', smoothieSettings);
-    if (invalid) { jobError = invalid; recordFailure('rife', invalid); return; }
+    if (invalid) { jobError = invalid; recordFailure('rife', invalid, false); return; }
     const job = createJobSnapshot('rife', videoPath, videoInfo);
     activeJob = job;
     suspendSourcePreviews();
@@ -1207,7 +1281,7 @@
         jobPhase = 'failed';
       }
       if (!isCancellation(e)) showToast(`Process failed: ${e}`, 'error');
-      if (jobError) recordFailure('rife', jobError);
+      if (jobError) recordFailure('rife', jobError, !isCancellation(e));
     } finally {
       isProcessing = false;
       activeRenderJobId = '';
@@ -1242,7 +1316,7 @@
     if (!rifeOutputPath || !rifeOutputInfo || anyProcessing || isLoading || isSmoothieLoading || isInstallingRifeEnvironment) return;
     if (!renderRuntimeReady) return;
     const invalid = settingsValidationError('smoothie', smoothieSettings);
-    if (invalid) { jobError = invalid; recordFailure('rife', invalid); return; }
+    if (invalid) { jobError = invalid; recordFailure('rife', invalid, false); return; }
     const job = Object.freeze({ ...createJobSnapshot('smoothie', rifeOutputPath, rifeOutputInfo), kind: 'rife', page: 'dashboard' });
     activeJob = job;
     suspendSourcePreviews();
@@ -1275,7 +1349,7 @@
       isComplete = true;
       void loadOutputPreview('rife', lastOutputPath, job.outputDuration);
       if (!isCancellation(e)) showToast(`Render failed: ${e}`, 'error');
-      if (jobError) recordFailure('rife', jobError);
+      if (jobError) recordFailure('rife', jobError, !isCancellation(e));
     } finally {
       isProcessing = false;
       activeRenderJobId = '';
@@ -1374,7 +1448,7 @@
     if (!smoothiePath || !smoothieInfo || anyProcessing || isSmoothieLoading || isLoading || isInstallingRifeEnvironment) return;
     if (!renderRuntimeReady) return;
     const invalid = settingsValidationError('smoothie', smoothieSettings);
-    if (invalid) { smoothieJobError = invalid; recordFailure('smoothie', invalid); return; }
+    if (invalid) { smoothieJobError = invalid; recordFailure('smoothie', invalid, false); return; }
     const job = createJobSnapshot('smoothie', smoothiePath, smoothieInfo);
     activeJob = job;
     suspendSourcePreviews();
@@ -1454,11 +1528,11 @@
     try {
       const snapshot = await invoke('install_rife_environment', { repair: repair === true });
       applyRuntimeSnapshot(snapshot);
-      if (!snapshot.rifeReady) throw new Error(snapshot.rifeHealth?.detail || 'The environment did not pass its health check. Repair or recheck before interpolating.');
-      showToast('RIFE environment ready', 'success');
+      if (!snapshot.rifeReady) throw new Error(snapshot.rifeHealth?.detail || 'The interpolation environment could not be verified.');
+      showToast('Interpolation is ready', 'success');
     } catch (e) {
       rifeInstallError = isCancellation(e) ? 'Environment setup cancelled. You can retry safely.' : String(e);
-      recordFailure('install', rifeInstallError);
+      recordFailure('install', rifeInstallError, !isCancellation(e));
       showToast(rifeInstallError, isCancellation(e) ? 'info' : 'error');
     } finally {
       isInstallingRifeEnvironment = false;
@@ -1499,6 +1573,7 @@
     } catch (error) {
       runtimeError = String(error);
       appendLog(`[cia render] Configuration recovery failed: ${error}`);
+      recordFailure('runtime', runtimeError);
     } finally { isRecoveringRuntime = false; }
   }
 
@@ -1532,6 +1607,7 @@
         showSmoothieSettings = false;
         showRenderCancelConfirmation = false;
         showUpdateModal = false;
+        closeFailureDialog();
         event.preventDefault();
       }
       if (event.key !== 'Tab') return;
@@ -1543,7 +1619,15 @@
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
     node.addEventListener('keydown', handleKey);
-    return { destroy() { node.removeEventListener('keydown', handleKey); if (previous?.isConnected) previous.focus(); } };
+    return { destroy() {
+      node.removeEventListener('keydown', handleKey);
+      queueMicrotask(() => {
+        const fallback = ['main .environment-actions button:not(:disabled)', 'main .settings-start:not(:disabled)', 'main .drop-zone[tabindex="0"]', 'main .recovery-actions button:not(:disabled)']
+          .map(selector => document.querySelector(selector)).find(Boolean);
+        const target = previous?.isConnected && previous !== document.body && !previous.closest('[inert]') ? previous : fallback;
+        target?.focus();
+      });
+    } };
   }
 
   function applyDetectedRuntime() {
@@ -1843,6 +1927,7 @@
           <strong>INTERPOLATION / RENDER DETAILS</strong>
           <p>{jobError}</p>
           <div class="recovery-actions">
+            <button class="btn-pro-secondary" onclick={() => openFailureDialog('rife', jobError, rifeFailureLogs)}>VIEW ERROR</button>
             <button class="btn-pro-secondary" onclick={() => copyLogsToClipboard('rife')}>COPY LOGS</button>
             <button class="btn-pro-secondary" onclick={() => clearFailure('rife')}>DISMISS</button>
           </div>
@@ -1852,6 +1937,7 @@
         <section class="failure-card" role="alert">
           <strong>ENVIRONMENT SETUP DETAILS</strong><p>{rifeInstallError}</p>
           <div class="recovery-actions">
+            <button class="btn-pro-secondary" onclick={() => openFailureDialog('install', rifeInstallError, installFailureLogs)}>VIEW ERROR</button>
             <button class="btn-pro-secondary" onclick={() => copyLogsToClipboard('install')}>COPY LOGS</button>
             <button class="btn-pro-secondary" onclick={() => clearFailure('install')}>DISMISS</button>
           </div>
@@ -2046,13 +2132,6 @@
           </div>
         {/if}
       {/if}
-      {#if runtimeSnapshot?.rifeReady && !isProcessing && !isInstallingRifeEnvironment}
-        <div class="runtime-toolbar">
-          <span>ENVIRONMENT READY</span>
-          <button class="btn-pro-secondary" onclick={() => refreshRuntimeSnapshot().catch(() => {})} disabled={anyProcessing}>RECHECK</button>
-          <button class="btn-pro-secondary" onclick={() => installRifeEnvironment(true)} disabled={anyProcessing}>REPAIR ENVIRONMENT</button>
-        </div>
-      {/if}
 
     <!-- RENDER PAGE (smoothie-rs engine) -->
     {:else if activePage === 'smoothie'}
@@ -2060,6 +2139,7 @@
         <section class="failure-card" role="alert">
           <strong>RENDER DETAILS</strong><p>{smoothieJobError}</p>
           <div class="recovery-actions">
+            <button class="btn-pro-secondary" onclick={() => openFailureDialog('smoothie', smoothieJobError, smoothieFailureLogs)}>VIEW ERROR</button>
             <button class="btn-pro-secondary" onclick={() => copyLogsToClipboard('smoothie')}>COPY LOGS</button>
             <button class="btn-pro-secondary" onclick={() => clearFailure('smoothie')}>DISMISS</button>
           </div>
@@ -2263,6 +2343,32 @@
       </div>
     {/key}
   </main>
+  {/if}
+
+  {#if failureDialog}
+    <div class="modal-backdrop" onclick={closeFailureDialog} role="presentation">
+      <div class="modal-card failure-modal" use:focusModal onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="failure-title" aria-describedby="failure-description" tabindex="0">
+        <div class="modal-header">
+          <h2 id="failure-title">SOMETHING WENT WRONG</h2>
+          <button class="btn-close-modal" onclick={closeFailureDialog} aria-label="Close error report">X</button>
+        </div>
+        <div class="modal-body">
+          <p id="failure-description">{failureDialog.operation} could not finish. Your source videos have not been changed.</p>
+          <p class="failure-message" role="alert">{failureDialog.error}</p>
+          <p>Report bug opens a prefilled GitHub issue for the developer. Review it and submit it on GitHub. Copy report includes a longer diagnostic excerpt. Nothing is sent automatically.</p>
+          <details class="bug-report-preview">
+            <summary>VIEW REPORT</summary>
+            <pre>{failureDialog.report}</pre>
+          </details>
+          {#if bugReportError}<p class="failure-message" role="alert">{bugReportError}</p>{/if}
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" onclick={closeFailureDialog}>CLOSE</button>
+          <button class="btn-secondary" onclick={copyBugReport}>COPY REPORT</button>
+          <button class="btn-primary-modal" onclick={reportBug} disabled={isOpeningBugReport}>{isOpeningBugReport ? 'OPENING...' : 'REPORT BUG'}</button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if showRenderCancelConfirmation}
@@ -2534,13 +2640,20 @@
     white-space: pre-wrap;
     user-select: text;
   }
-  .recovery-actions, .environment-actions, .runtime-toolbar, .lut-picker {
+  .recovery-actions, .environment-actions, .lut-picker {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
-  .runtime-toolbar { flex-shrink: 0; justify-content: flex-end; margin-top: 10px; font-size: 10px; color: #a1a1aa; }
+  .modal-card.failure-modal { width: min(620px, calc(100vw - 32px)); }
+  .failure-modal p { line-height: 1.6; overflow-wrap: anywhere; }
+  .failure-message, .bug-report-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  .failure-message { color: #fda4af; }
+  .bug-report-preview { margin-top: 16px; }
+  .bug-report-preview summary { cursor: pointer; }
+  .bug-report-preview pre { max-height: 160px; overflow-y: auto; font-size: 10px; }
+  .failure-modal .modal-footer { flex-wrap: wrap; }
   .recovery-note { max-width: 460px; font-size: 11px; line-height: 1.5; color: #a1a1aa; text-align: center; }
   .lut-picker { margin-bottom: 12px; }
   .lut-picker span { flex: 1 1 140px; overflow-wrap: anywhere; font-size: 11px; }

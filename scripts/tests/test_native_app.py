@@ -157,7 +157,7 @@ class WebDriver:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--application", required=True, type=Path, help="Installed/extracted candidate application EXE, not the NSIS installer")
-    parser.add_argument("--expected-version", default="1.3.0")
+    parser.add_argument("--expected-version", default=json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"])
     parser.add_argument("--expected-speed", type=float, help="Require this saved speed; use 1.07 when qualifying an actual fresh profile")
     parser.add_argument("--tauri-driver", type=Path, default=Path(shutil.which("tauri-driver") or Path.home() / ".cargo/bin/tauri-driver.exe"))
     parser.add_argument("--edge-driver", type=Path)
@@ -293,12 +293,27 @@ def main() -> int:
                 assert snapshot.get("rifeReady"), "Interpolation requires a healthy preinstalled environment"
                 driver.click_text("INTERPOLATION")
                 driver.wait(lambda: driver.execute("return !!document.querySelector('.drop-zone');"), "Interpolation source picker")
+                assert driver.execute("return !document.querySelector('.runtime-toolbar') && !document.querySelector('[role=dialog]') && [...document.querySelectorAll('button')].every(e=>!['RECHECK','REPAIR ENVIRONMENT'].includes(e.textContent.trim()));")
+                evidence["checks"]["healthy_interpolation_has_no_maintenance_controls_or_popup"] = True
+                driver.screenshot(destination / "interpolation-ready-native.png")
                 driver.invoke("plugin:event|emit", {"event": "tauri://drag-drop", "payload": {"paths": [str(video)]}})
                 driver.wait(lambda: driver.execute("return [...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='START INTERPOLATION');"), "interpolation analysis")
                 driver.click_text("START INTERPOLATION")
                 driver.wait(render_finished, "real RIFE interpolation")
                 evidence["checks"]["real_ui_interpolation"] = True
                 driver.screenshot(destination / "interpolation-native.png")
+                driver.click_text("NEW RENDER")
+                invalid_video = destination / "invalid diagnostic fixture.mp4"
+                invalid_video.write_bytes(b"Not a video: native error popup qualification.")
+                driver.invoke("plugin:event|emit", {"event": "tauri://drag-drop", "payload": {"paths": [str(invalid_video)]}})
+                driver.wait(lambda: driver.execute("return document.querySelector('[role=dialog]')?.getAttribute('aria-labelledby')==='failure-title';"), "native error popup")
+                report = driver.execute("return document.querySelector('.bug-report-preview pre').textContent;")
+                assert "Error:" in report and "[local path]" in report
+                assert str(destination) not in report and "invalid diagnostic fixture.mp4" not in report
+                evidence["checks"]["real_analysis_failure_opens_redacted_report_popup"] = True
+                evidence["checks"]["bug_report_not_submitted"] = True
+                driver.screenshot(destination / "error-popup-native.png")
+                driver.execute("document.querySelector('[aria-label=\"Close error report\"]').click();")
         assert not driver.execute("return window.ciaQualificationCsp;")
         evidence["checks"]["csp_violations_during_navigation_and_operations"] = 0
         evidence["status"] = "passed"

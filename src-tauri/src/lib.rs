@@ -4182,6 +4182,87 @@ fn open_about_link(url: String) -> Result<(), String> {
     Ok(())
 }
 
+fn percent_encode_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+    }
+    encoded
+}
+
+fn bug_report_url(report: &str) -> Result<String, String> {
+    const MAX_URL_LENGTH: usize = 1900;
+    let report = report.trim();
+    if report.is_empty() {
+        return Err("The bug report is empty".to_string());
+    }
+    let title = format!("cia render v{} bug report", env!("CARGO_PKG_VERSION"));
+    let mut url = format!(
+        "{PROJECT_REPOSITORY_URL}/issues/new?title={}&body=",
+        percent_encode_component(&title)
+    );
+    for character in report.chars() {
+        let mut buffer = [0; 4];
+        let encoded = percent_encode_component(character.encode_utf8(&mut buffer));
+        if url.len() + encoded.len() > MAX_URL_LENGTH {
+            break;
+        }
+        url.push_str(&encoded);
+    }
+    Ok(url)
+}
+
+#[tauri::command]
+fn open_bug_report(report: String) -> Result<(), String> {
+    let url = bug_report_url(&report)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        #[link(name = "shell32")]
+        extern "system" {
+            fn ShellExecuteW(
+                window: *mut c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show_command: i32,
+            ) -> *mut c_void;
+        }
+        let operation: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+        let target: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+        // The fixed HTTPS URL is passed directly to Windows, never to a shell.
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        } as isize;
+        if result <= 32 {
+            return Err(format!(
+                "Unable to open the bug report in your browser (Windows error {result})"
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = url;
+        Err("Opening bug reports is currently supported on Windows only".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut context = tauri::generate_context!();
@@ -4267,7 +4348,8 @@ pub fn run() {
             open_file_dialog,
             open_target_file,
             open_target_folder,
-            open_about_link
+            open_about_link,
+            open_bug_report
         ])
         .build(context)
         .expect("error while building cia render")
@@ -4283,6 +4365,40 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bug_report_url_rejects_empty_reports() {
+        assert!(super::bug_report_url("").is_err());
+        assert!(super::bug_report_url(" \r\n\t ").is_err());
+    }
+
+    #[test]
+    fn bug_report_url_encodes_untrusted_text_for_the_fixed_repository() {
+        let url = super::bug_report_url("A&B?x=1#frag \"|<>^%$(whoami)` é🎬\nnext").unwrap();
+        let title = format!("cia render v{} bug report", env!("CARGO_PKG_VERSION"));
+        assert!(url.starts_with(&format!(
+            "https://github.com/cia213/cia-app/issues/new?title={}&body=",
+            super::percent_encode_component(&title)
+        )));
+        assert!(url.ends_with("A%26B%3Fx%3D1%23frag%20%22%7C%3C%3E%5E%25%24%28whoami%29%60%20%C3%A9%F0%9F%8E%AC%0Anext"));
+        assert!(url.is_ascii());
+        assert_eq!(url.matches('?').count(), 1);
+        assert_eq!(url.matches('&').count(), 1);
+    }
+
+    #[test]
+    fn bug_report_url_truncates_only_complete_unicode_characters() {
+        let url = super::bug_report_url(&"🧪".repeat(1000)).unwrap();
+        let (prefix, body) = url.split_once("&body=").unwrap();
+        assert!(url.len() <= 1900);
+        assert!(url.len() + "%F0%9F%A7%AA".len() > 1900);
+        assert_eq!(body.len() % "%F0%9F%A7%AA".len(), 0);
+        assert_eq!(body, "%F0%9F%A7%AA".repeat(body.len() / 12));
+        assert!(prefix.ends_with("bug%20report"));
+
+        let ascii = super::bug_report_url(&"a".repeat(5000)).unwrap();
+        assert_eq!(ascii.len(), 1900);
+    }
+
     #[test]
     fn rife_install_errors_keep_the_complete_message_and_ignore_powershell_wrapping() {
         let diagnostic = "Python package missing at C:/a long path/python/python.exe";

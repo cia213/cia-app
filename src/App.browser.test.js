@@ -70,9 +70,9 @@ async function fixture(t, options = {}) {
         window.audit.commands.push({ command, args: command.includes('updater') ? undefined : args });
         if (command === 'plugin:event|listen') { events.set(args.event, callbacks.get(args.handler)); return ++id; }
         if (command === 'get_runtime_snapshot') return snapshot;
-        if (command === 'get_app_version') return '1.3.0';
+        if (command === 'get_app_version') return '1.3.1';
         if (command === 'save_ui_preferences') { config.ui = { migrated: true, ...args }; return snapshot; }
-        if (command === 'plugin:updater|check') return settings.updateAvailable ? { rid: 40, currentVersion: '1.3.0', version: '1.3.1', body: 'Test update' } : null;
+        if (command === 'plugin:updater|check') return settings.updateAvailable ? { rid: 40, currentVersion: '1.3.1', version: '1.3.2', body: 'Test update' } : null;
         if (command === 'install_rife_environment' || command === 'run_time_remap' || command === 'run_smoothie' || command === 'pause_render') return wait(command);
         if (command === 'plugin:updater|download_and_install') return wait(command);
         if (command === 'open_file_dialog') return 'C:/fixture/input.mp4';
@@ -117,6 +117,58 @@ test('setup blocks visible update installation and exposes cancellation', { time
   assert.equal(await page.evaluate(() => window.audit.commands.find(item => item.command === 'cancel_render').args.jobId), 'install-rife');
   await page.evaluate(() => window.audit.reject('install_rife_environment', 'CIA_RENDER_CANCELLED'));
   await page.getByRole('alert').getByText('Environment setup cancelled. You can retry safely.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('dialog').count(), 0);
+});
+
+test('healthy interpolation has no environment toolbar or error dialog at both supported sizes', { timeout: 20000 }, async t => {
+  for (const viewport of [{ width: 920, height: 540 }, { width: 640, height: 440 }]) {
+    const { page } = await fixture(t, { rifeReady: true, viewport });
+    await page.getByRole('button', { name: 'INTERPOLATION', exact: true }).click();
+    await page.locator('.drop-zone').waitFor();
+    assert.equal(await page.getByText('ENVIRONMENT READY', { exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'RECHECK', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'REPAIR ENVIRONMENT', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.equal(await page.evaluate(() => window.audit.commands.some(item => item.command === 'open_bug_report')), false);
+  }
+});
+
+test('setup error popup stays usable at minimum size and shares only a redacted report', { timeout: 20000 }, async t => {
+  const { page } = await fixture(t, { viewport: { width: 640, height: 440 } });
+  await page.getByRole('button', { name: 'INTERPOLATION', exact: true }).click();
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  await page.getByRole('button', { name: 'INSTALL ENVIRONMENT', exact: true }).click();
+  await page.evaluate(() => window.audit.reject('install_rife_environment', 'Python launch failed at C:/Users/Private Person/runtime/python.exe'));
+  const dialog = page.getByRole('dialog', { name: 'SOMETHING WENT WRONG' });
+  await dialog.getByRole('alert').getByText('Python launch failed at C:/Users/Private Person/runtime/python.exe', { exact: true }).waitFor();
+  await dialog.getByText('VIEW REPORT', { exact: true }).click();
+  assert.doesNotMatch(await dialog.locator('pre').innerText(), /Private Person|python\.exe/);
+  const report = dialog.getByRole('button', { name: 'REPORT BUG', exact: true });
+  assert.equal(await report.isVisible(), true);
+  const bounds = await report.boundingBox();
+  assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 440);
+  await report.focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await dialog.getByRole('button', { name: 'Close error report' }).evaluate(node => document.activeElement === node), true);
+  await report.click();
+  assert.doesNotMatch(await page.evaluate(() => window.audit.commands.find(item => item.command === 'open_bug_report').args.report), /Private Person|python\.exe/);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'INSTALL ENVIRONMENT', exact: true }).evaluate(node => document.activeElement === node), true);
+});
+
+test('a job failure replaces an open update dialog with a single error popup', { timeout: 20000 }, async t => {
+  const { page } = await fixture(t, { rifeReady: true, updateAvailable: true });
+  await selectVideo(page, 'INTERPOLATION');
+  await page.getByRole('button', { name: 'START INTERPOLATION', exact: true }).click();
+  await page.getByRole('button', { name: 'ABOUT', exact: true }).click();
+  await page.getByRole('button', { name: 'Update available', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Application update' }).waitFor();
+  await page.evaluate(() => window.audit.reject('run_time_remap', 'CUDA execution failed'));
+  await page.getByRole('dialog', { name: 'SOMETHING WENT WRONG' }).waitFor();
+  assert.equal(await page.getByRole('dialog').count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Close error report' }).evaluate(node => document.activeElement === node), true);
 });
 
 test('interpolation failure and useful logs remain after toast, navigation and reload', { timeout: 20000 }, async t => {
@@ -124,7 +176,16 @@ test('interpolation failure and useful logs remain after toast, navigation and r
   await selectVideo(page, 'INTERPOLATION');
   await page.getByRole('button', { name: 'START INTERPOLATION', exact: true }).click();
   await page.evaluate(() => window.audit.reject('run_time_remap', 'CUDA unsupported fixture device'));
-  const failure = page.getByRole('alert');
+  const dialog = page.getByRole('dialog', { name: 'SOMETHING WENT WRONG' });
+  await dialog.getByRole('alert').getByText('CUDA unsupported fixture device', { exact: true }).waitFor();
+  await dialog.getByRole('button', { name: 'COPY REPORT', exact: true }).click();
+  assert.match(await page.evaluate(() => navigator.clipboard.readText()), /cia render 1\.3\.1[\s\S]*CUDA unsupported fixture device/);
+  assert.equal(await page.evaluate(() => window.audit.commands.some(item => item.command === 'open_bug_report')), false);
+  await dialog.getByRole('button', { name: 'REPORT BUG', exact: true }).click();
+  assert.match(await page.evaluate(() => window.audit.commands.find(item => item.command === 'open_bug_report').args.report), /CUDA unsupported fixture device/);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  const failure = page.locator('.failure-card');
   await failure.getByText('CUDA unsupported fixture device', { exact: true }).waitFor();
   await page.waitForTimeout(4200);
   assert.equal(await failure.getByText('CUDA unsupported fixture device', { exact: true }).isVisible(), true);
@@ -134,6 +195,7 @@ test('interpolation failure and useful logs remain after toast, navigation and r
   assert.equal(await page.getByRole('button', { name: 'ADVANCED RUNTIME PATHS', exact: true }).count(), 0);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: 'INTERPOLATION', exact: true }).click();
+  assert.equal(await page.getByRole('dialog').count(), 0);
   await page.getByRole('alert').getByText('CUDA unsupported fixture device', { exact: true }).waitFor();
   await page.getByRole('alert').getByRole('button', { name: 'COPY LOGS', exact: true }).click();
   assert.match(await page.evaluate(() => navigator.clipboard.readText()), /CUDA unsupported fixture device/);
@@ -177,6 +239,9 @@ test('invalid saved preferences recover and Details validates before saving with
 
 test('broken configuration exposes reset and unsupported CUDA keeps Render usable', { timeout: 20000 }, async t => {
   const { page } = await fixture(t, { loadError: 'Invalid config.json', healthStatus: 'unsupported', healthDetail: 'This fixture GPU is unsupported.' });
+  const dialog = page.getByRole('dialog', { name: 'SOMETHING WENT WRONG' });
+  await dialog.getByRole('alert').getByText('Invalid config.json', { exact: true }).waitFor();
+  await dialog.getByRole('button', { name: 'Close error report', exact: true }).click();
   await page.getByRole('button', { name: 'RESET CONFIGURATION', exact: true }).waitFor();
   assert.equal(await page.locator('.drop-zone').count(), 0);
   await page.getByRole('button', { name: 'RESET CONFIGURATION', exact: true }).click();

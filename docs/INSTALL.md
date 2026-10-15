@@ -41,18 +41,28 @@ A full health check can take tens of seconds on the first check.
 
 ## Repair and diagnostics
 
-The interpolation page distinguishes **MISSING**, **BROKEN**, **UNSUPPORTED** and
-**READY** environments. Read the displayed reason, then use **RECHECK** or
-**REPAIR ENVIRONMENT** as appropriate. Older environments using Torch 2.5.1 are
-not accepted as the v1.3.0 profile; repair creates the new verified environment.
+Once interpolation is available, the page shows your clip workspace without an
+**ENVIRONMENT READY** label or routine **RECHECK** / **REPAIR ENVIRONMENT** buttons.
+Environment verification still runs in the background. First-time setup remains
+available when the optional environment is missing; recovery actions appear only
+when a problem needs attention. Older environments using Torch 2.5.1 are not
+accepted as the v1.3.0 profile; repair creates the new verified environment.
 Downloads display byte progress, retry transient failures, and reuse only verified
 cached artifacts. **CANCEL SETUP** stops installation without promoting its
 unfinished generation.
 
-Failure messages and bounded logs stay visible after navigation and restart.
-**COPY LOGS** copies a diagnostic excerpt with local media paths redacted. Keep
-the error message when reporting a problem. Native process logs are stored under
-the application's local app-data `diagnostics` directory.
+An actual operation failure opens a popup with its error and reporting actions.
+Cancelling an operation does not open a bug popup. Failure messages and bounded
+logs remain available after navigation and restart. **COPY LOGS** masks common
+credentials but may include local paths. **COPY REPORT** also masks local paths
+and includes the application version and operation details.
+
+The optional GitHub report action opens a prefilled issue draft in your browser.
+Review the content and submit it on GitHub to send it to the developer; opening
+the draft does not submit a report. A long draft may contain only an excerpt;
+use **COPY REPORT** for the complete report. There is no automatic telemetry or
+background transmission of diagnostics. Native process logs stay under the
+application's local app-data `diagnostics` directory.
 
 **RESET RIFE CONFIGURATION** clears RIFE path overrides so the managed environment
 can be selected again. If configuration itself is invalid, **RESET CONFIGURATION**

@@ -68,6 +68,8 @@ function makeContext(overrides = {}) {
     autoRender: false, rifeSettings: { ...rife }, smoothieSettings: { ...smoothie },
     runtimeSnapshot: { config: { rife: {}, smoothie: { lutFile: '' }, ui: {} }, rifeReady: true, smoothieReady: true, mediaToolsReady: true },
     showRifeSettings: true, showSmoothieSettings: true,
+    failureDialog: null, bugReportError: '', isOpeningBugReport: false,
+    notifiedRuntimeProblem: '', appVersion: '1.3.1',
     DEFAULT_RIFE: rife, DEFAULT_SMOOTHIE: smoothie,
     invoke: async (command, args) => {
       calls.push({ command, args });
@@ -540,6 +542,53 @@ test('setup cancellation targets the installer operation and waits for completio
   await pending;
   assert.equal(ctx.isInstallingRifeEnvironment, false);
   assert.match(ctx.rifeInstallError, /cancelled/);
+  assert.equal(ctx.failureDialog, null);
+});
+
+test('new failures offer a frozen private report and contact GitHub only on request', async () => {
+  const { ctx, calls, notices } = makeContext();
+  ctx.appendLog('Input: C:\\Users\\Private User\\Videos\\secret clip.mp4');
+  ctx.appendLog('Cache: \\\\private-server\\personal\\model.pt');
+  ctx.appendLog('Source: /home/private-user/Videos/personal.mp4');
+  ctx.appendLog('Authorization: Bearer private-access-value');
+  ctx.appendLog('https://name:fake@example.test token=private-token github_pat_PRIVATEVALUE');
+  ctx.appendLog('Authorization: Basic ZmFrZS11c2VyOmZha2Utc2VjcmV0');
+  ctx.appendLog('password="fake private phrase"');
+  ctx.appendLog('token = fake-private-token');
+  ctx.appendLog("Path: C:\\Users\\O'Neil\\Videos\\private clip.mp4");
+  ctx.recordFailure('rife', 'CUDA failed at C:/Users/Private User/runtime/python.exe');
+  assert.equal(ctx.failureDialog.kind, 'rife');
+  assert.match(ctx.failureDialog.error, /Private User/);
+  assert.match(ctx.failureDialog.report, /cia render 1\.3\.1/);
+  assert.match(ctx.failureDialog.report, /CUDA failed/);
+  assert.match(ctx.failureDialog.report, /\[local path\]/);
+  assert.doesNotMatch(ctx.failureDialog.report, /Private User|private-user|private-server|personal|private-access-value|private-token|PRIVATEVALUE|name:fake/);
+  assert.doesNotMatch(ctx.failureDialog.report, /ZmFrZS11c2VyOmZha2Utc2VjcmV0|fake private phrase|fake-private-token|Neil|private clip/);
+  assert.equal(calls.length, 0);
+  const report = ctx.failureDialog.report;
+  ctx.appendLog('A later unrelated job');
+  await ctx.reportBug();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'open_bug_report');
+  assert.equal(calls[0].args.report, report);
+  assert.doesNotMatch(calls[0].args.report, /later unrelated/);
+  assert.match(notices.at(-1).message, /Review and submit/);
+  ctx.closeFailureDialog();
+  assert.equal(ctx.failureDialog, null);
+});
+
+test('report opener and clipboard errors remain actionable without claiming submission', async () => {
+  const { ctx, notices } = makeContext({
+    navigator: { clipboard: { writeText: async () => { throw new Error('Denied'); } } },
+    invoke: async () => { throw new Error('Browser unavailable'); }
+  });
+  ctx.recordFailure('smoothie', 'Encoder failed');
+  await ctx.copyBugReport();
+  assert.match(ctx.bugReportError, /could not be copied/);
+  await ctx.reportBug();
+  assert.match(ctx.bugReportError, /could not be opened/);
+  assert.equal(ctx.isOpeningBugReport, false);
+  assert.equal(notices.length, 0);
 });
 
 test('failure diagnostics survive restart and redact credentials', async () => {
