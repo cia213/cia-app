@@ -298,12 +298,28 @@ fn publish_file_without_overwrite(source: &Path, destination: &Path) -> Result<(
 
 #[derive(Clone)]
 struct RenderJob {
+    kind: OperationKind,
     process_id: Option<u32>,
     owner: Option<Arc<process_control::ProcessOwner>>,
     paused: bool,
     cancel_requested: bool,
     last_activity: std::time::Instant,
     progress_frame: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OperationKind {
+    Exclusive,
+    Render,
+    Setup,
+}
+
+fn operations_compatible(first: OperationKind, second: OperationKind) -> bool {
+    matches!(
+        (first, second),
+        (OperationKind::Render, OperationKind::Setup)
+            | (OperationKind::Setup, OperationKind::Render)
+    )
 }
 
 #[derive(Default)]
@@ -330,7 +346,10 @@ impl<'a> PreviewGuard<'a> {
             .jobs
             .lock()
             .map_err(|_| "Render job registry is unavailable")?;
-        if !render_jobs.is_empty() {
+        if render_jobs
+            .values()
+            .any(|job| job.kind != OperationKind::Setup)
+        {
             return Err("Video previews are deferred while a render is running".to_string());
         }
         let request_id = request_id
@@ -364,7 +383,10 @@ impl<'a> PreviewGuard<'a> {
             .jobs
             .lock()
             .map_err(|_| "Render job registry is unavailable")?;
-        if !render_jobs.is_empty() {
+        if render_jobs
+            .values()
+            .any(|job| job.kind != OperationKind::Setup)
+        {
             return Err("Video previews are deferred while a render is running".to_string());
         }
         let mut previews = self
@@ -445,6 +467,14 @@ struct JobGuard<'a> {
 
 impl<'a> JobGuard<'a> {
     fn reserve(registry: &'a JobRegistry, job_id: &str) -> Result<Self, String> {
+        Self::reserve_kind(registry, job_id, OperationKind::Exclusive)
+    }
+
+    fn reserve_kind(
+        registry: &'a JobRegistry,
+        job_id: &str,
+        kind: OperationKind,
+    ) -> Result<Self, String> {
         if job_id.trim().is_empty() {
             return Err("A render job identifier is required".to_string());
         }
@@ -452,12 +482,17 @@ impl<'a> JobGuard<'a> {
             .jobs
             .lock()
             .map_err(|_| "Render job registry is unavailable")?;
-        if !jobs.is_empty() {
+        if jobs.contains_key(job_id)
+            || jobs
+                .values()
+                .any(|job| !operations_compatible(job.kind, kind))
+        {
             return Err("Another render job is already running".to_string());
         }
         jobs.insert(
             job_id.to_string(),
             RenderJob {
+                kind,
                 process_id: None,
                 owner: None,
                 paused: false,
@@ -467,7 +502,9 @@ impl<'a> JobGuard<'a> {
             },
         );
         drop(jobs);
-        registry.cancel_all_previews();
+        if kind != OperationKind::Setup {
+            registry.cancel_all_previews();
+        }
         Ok(Self {
             registry,
             job_id: job_id.to_string(),
@@ -1595,8 +1632,9 @@ fn snapshot_from_config(
     config: RuntimeConfig,
     detected: RuntimeConfig,
     load_error: Option<String>,
+    health: Option<RifeHealth>,
 ) -> RuntimeSnapshot {
-    let rife_health = probe_rife_health(app, &config, false);
+    let rife_health = health.unwrap_or_else(|| probe_rife_health(app, &config, false));
     let rife_ready = rife_health.ready();
     let smoothie_ready = smoothie_runtime(&config, app).is_ok();
     let python = existing_file(&config.rife.python_executable);
@@ -1714,9 +1752,30 @@ fn snapshot_from_config(
 fn runtime_snapshot(app: &tauri::AppHandle) -> RuntimeSnapshot {
     let detected = auto_detect_config();
     match load_config(app) {
-        Ok(config) => snapshot_from_config(app, effective_config(app, config), detected, None),
-        Err(error) => snapshot_from_config(app, RuntimeConfig::default(), detected, Some(error)),
+        Ok(config) => {
+            snapshot_from_config(app, effective_config(app, config), detected, None, None)
+        }
+        Err(error) => {
+            snapshot_from_config(app, RuntimeConfig::default(), detected, Some(error), None)
+        }
     }
+}
+
+fn runtime_overview(app: &tauri::AppHandle) -> RuntimeSnapshot {
+    let (config, error) = match load_config(app) {
+        Ok(config) => (effective_config(app, config), None),
+        Err(error) => (RuntimeConfig::default(), Some(error)),
+    };
+    snapshot_from_config(
+        app,
+        config,
+        RuntimeConfig::default(),
+        error,
+        Some(RifeHealth::unavailable(
+            "checking",
+            "Interpolation verification is running in the background.",
+        )),
+    )
 }
 
 fn required_file(value: &Option<String>, label: &str) -> Result<PathBuf, String> {
@@ -3368,6 +3427,59 @@ async fn get_runtime_snapshot(app: tauri::AppHandle) -> Result<RuntimeSnapshot, 
 }
 
 #[tauri::command]
+async fn get_runtime_overview(app: tauri::AppHandle) -> Result<RuntimeSnapshot, String> {
+    tokio::task::spawn_blocking(move || runtime_overview(&app))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn check_rife_environment(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, JobRegistry>,
+    check_id: String,
+) -> Result<RifeHealth, String> {
+    if !registry
+        .jobs
+        .lock()
+        .map_err(|_| "Operation registry is unavailable")?
+        .is_empty()
+    {
+        return Err("CIA_RUNTIME_CHECK_DEFERRED".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let config = effective_config(&app, load_config(&app)?);
+        let configured = config.rife.python_executable.is_some() || config.rife.directory.is_some();
+        let runtime = match rife_runtime(&config, &app) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Ok(RifeHealth::unavailable(
+                    if configured { "broken" } else { "missing" },
+                    error,
+                ))
+            }
+        };
+        let script = bundled_resource(&app, "runtime_health.py")
+            .ok_or("The bundled interpolation verifier is missing")?;
+        let emitter = app.clone();
+        let callback = Arc::new(move |mut progress: Value| {
+            progress["checkId"] = Value::String(check_id.clone());
+            let _ = emitter.emit("runtime-check-progress", progress);
+        });
+        Ok(runtime_health::probe_with_progress(
+            &runtime.python,
+            &script,
+            &runtime.directory,
+            &runtime.model_directory,
+            false,
+            Some(callback),
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn get_app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
@@ -3382,7 +3494,7 @@ async fn save_runtime_config(
     let config = normalize_config(config);
     runtime_health::invalidate();
     write_config(&app, &config)?;
-    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+    tokio::task::spawn_blocking(move || runtime_overview(&app))
         .await
         .map_err(|error| error.to_string())
 }
@@ -3403,7 +3515,7 @@ async fn save_ui_preferences(
             smoothie_settings,
         };
     })?;
-    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+    tokio::task::spawn_blocking(move || runtime_overview(&app))
         .await
         .map_err(|error| error.to_string())
 }
@@ -3489,7 +3601,7 @@ async fn reset_runtime_config(
     scope: String,
 ) -> Result<RuntimeSnapshot, String> {
     ensure_idle(&registry)?;
-    if !matches!(scope.as_str(), "rife" | "all") {
+    if !matches!(scope.as_str(), "rife" | "render" | "all") {
         return Err("Unsupported reset scope".into());
     }
     let mut config = match load_config(&app) {
@@ -3511,14 +3623,16 @@ async fn reset_runtime_config(
             RuntimeConfig::default()
         }
     };
-    config.rife = RifeConfig::default();
-    if scope == "all" {
+    if scope != "render" {
+        config.rife = RifeConfig::default();
+    }
+    if scope != "rife" {
         config.smoothie = SmoothieConfig::default();
         config.media_tools = MediaToolsConfig::default();
     }
     write_config(&app, &config)?;
     runtime_health::invalidate();
-    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+    tokio::task::spawn_blocking(move || runtime_overview(&app))
         .await
         .map_err(|error| error.to_string())
 }
@@ -3537,6 +3651,7 @@ fn begin_app_update(registry: tauri::State<JobRegistry>) -> Result<(), String> {
     jobs.insert(
         "app-update".into(),
         RenderJob {
+            kind: OperationKind::Exclusive,
             process_id: None,
             owner: None,
             paused: false,
@@ -3594,7 +3709,7 @@ async fn install_rife_environment(
     registry: tauri::State<'_, JobRegistry>,
     repair: Option<bool>,
 ) -> Result<RuntimeSnapshot, String> {
-    let job = JobGuard::reserve(&registry, "install-rife")?;
+    let job = JobGuard::reserve_kind(&registry, "install-rife", OperationKind::Setup)?;
     let configured = effective_config(&app, load_config(&app)?);
     if !repair.unwrap_or(false) && probe_rife_health(&app, &configured, true).ready() {
         let _ = app.emit(
@@ -3673,7 +3788,9 @@ async fn install_rife_environment(
     update_config(&app, |config| {
         config.rife = installed_rife;
     })?;
-    Ok(runtime_snapshot(&app))
+    tokio::task::spawn_blocking(move || runtime_snapshot(&app))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn rife_install_failure(stderr_lines: &[String], status: &str) -> String {
@@ -3970,7 +4087,7 @@ async fn run_smoothie(
     encoder: Option<String>,
     speed: Option<f64>,
 ) -> Result<String, String> {
-    let job = JobGuard::reserve(&registry, &job_id)?;
+    let job = JobGuard::reserve_kind(&registry, &job_id, OperationKind::Render)?;
     let config = load_config(&app)?;
     let runtime = smoothie_runtime(&config, &app)?;
     let info = probe_video_impl(&video_path, &runtime.ffprobe, Some(&job)).await?;
@@ -4328,6 +4445,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_runtime_snapshot,
+            get_runtime_overview,
+            check_rife_environment,
             get_app_version,
             save_runtime_config,
             save_ui_preferences,
@@ -4573,6 +4692,49 @@ mod tests {
         assert!(super::JobGuard::reserve(&registry, "second").is_err());
         drop(job);
         assert!(super::JobGuard::reserve(&registry, "second").is_ok());
+    }
+
+    #[test]
+    fn component_setup_and_render_coexist_without_admitting_interpolation_or_another_render() {
+        for setup_first in [true, false] {
+            let registry = super::JobRegistry::default();
+            let (first_kind, second_kind) = if setup_first {
+                (super::OperationKind::Setup, super::OperationKind::Render)
+            } else {
+                (super::OperationKind::Render, super::OperationKind::Setup)
+            };
+            let first = super::JobGuard::reserve_kind(&registry, "first", first_kind).unwrap();
+            let second = super::JobGuard::reserve_kind(&registry, "second", second_kind).unwrap();
+            assert!(super::JobGuard::reserve(&registry, "interpolation").is_err());
+            assert!(super::JobGuard::reserve_kind(
+                &registry,
+                "another-render",
+                super::OperationKind::Render
+            )
+            .is_err());
+            assert!(super::JobGuard::reserve_kind(
+                &registry,
+                "another-setup",
+                super::OperationKind::Setup
+            )
+            .is_err());
+            drop(first);
+            assert!(super::running_job(&registry, "second").is_ok());
+            drop(second);
+            assert!(registry.jobs.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn component_setup_keeps_video_previews_available() {
+        let registry = super::JobRegistry::default();
+        let setup =
+            super::JobGuard::reserve_kind(&registry, "setup", super::OperationKind::Setup).unwrap();
+        let preview =
+            super::PreviewGuard::reserve(&registry, Some("source-preview".into())).unwrap();
+        assert!(preview.check_cancelled().is_ok());
+        drop(setup);
+        assert!(preview.check_cancelled().is_ok());
     }
 
     #[test]

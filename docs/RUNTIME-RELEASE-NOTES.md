@@ -15,8 +15,9 @@ payload from pinned, hash-verified upstream archives.
 
 The staging copy contains no personal LUT, model, source video, user configuration
 or developer-home path. Recipe/default settings are neutral; the application
-applies each job's selected settings. The optional RIFE environment is downloaded
-only after **INSTALL ENVIRONMENT**, rather than bundled into the installer.
+applies each job's selected settings. The RIFE environment is downloaded
+automatically when the background check finds missing or broken components,
+rather than bundled into the installer. Hardware and disk checks run first.
 
 ## Prepare and build
 
@@ -65,7 +66,7 @@ Private environments, model weights, media fixtures, raw personal paths and
 credentials must remain excluded. Pin the GitHub tag to the checked source commit
 and verify its Windows CI result.
 
-## Downloaded only after INSTALL ENVIRONMENT
+## Downloaded during automatic interpolation setup
 
 The exact profile is
 `rife4.26-torch2.10-cu128-py311-win64-v1`. It includes:

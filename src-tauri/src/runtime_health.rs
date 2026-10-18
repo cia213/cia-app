@@ -121,6 +121,42 @@ fn read_bounded(mut pipe: impl Read) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+type ProgressCallback = Arc<dyn Fn(Value) + Send + Sync>;
+
+fn read_progress(mut pipe: impl Read, progress: Option<ProgressCallback>) -> String {
+    let mut retained = Vec::new();
+    let mut pending = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while let Ok(count) = pipe.read(&mut chunk) {
+        if count == 0 {
+            break;
+        }
+        retained.extend_from_slice(&chunk[..count]);
+        if retained.len() > 65536 {
+            retained.drain(..retained.len() - 65536);
+        }
+        for byte in &chunk[..count] {
+            if *byte == b'\n' {
+                if let (Some(callback), Some(line)) =
+                    (progress.as_ref(), std::str::from_utf8(&pending).ok())
+                {
+                    if let Some(value) = line
+                        .strip_prefix("CIA_HEALTH_PROGRESS ")
+                        .and_then(|data| serde_json::from_str::<Value>(data).ok())
+                        .filter(Value::is_object)
+                    {
+                        callback(value);
+                    }
+                }
+                pending.clear();
+            } else if pending.len() < 8192 {
+                pending.push(*byte);
+            }
+        }
+    }
+    String::from_utf8_lossy(&retained).into_owned()
+}
+
 pub(crate) fn probe(
     python: &Path,
     script: &Path,
@@ -128,6 +164,22 @@ pub(crate) fn probe(
     model: &Path,
     force: bool,
 ) -> RifeHealth {
+    probe_with_progress(python, script, rife, model, force, None)
+}
+
+pub(crate) fn probe_with_progress(
+    python: &Path,
+    script: &Path,
+    rife: &Path,
+    model: &Path,
+    force: bool,
+    progress: Option<ProgressCallback>,
+) -> RifeHealth {
+    if let Some(callback) = progress.as_ref() {
+        callback(
+            serde_json::json!({"phase":"files", "label":"Checking installed interpolation files", "completed":0, "total":0}),
+        );
+    }
     if CLOSING.load(Ordering::Relaxed) {
         return RifeHealth::unavailable(
             "broken",
@@ -190,6 +242,9 @@ pub(crate) fn probe(
         .env_remove("PYTHONIOENCODING")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if progress.is_some() {
+        command.arg("--progress");
+    }
     if manifest.is_file() {
         command.arg("--manifest").arg(&manifest);
     }
@@ -232,7 +287,7 @@ pub(crate) fn probe(
             let stderr = child
                 .stderr
                 .take()
-                .map(|p| std::thread::spawn(move || read_bounded(p)));
+                .map(|p| std::thread::spawn(move || read_progress(p, progress)));
             let start = Instant::now();
             let outcome = loop {
                 match child.try_wait() {
@@ -298,7 +353,9 @@ pub(crate) fn probe(
         if cache.len() >= 8 {
             cache.clear();
         }
-        cache.insert(key, (Instant::now(), health.clone()));
+        if health.status != "busy" {
+            cache.insert(key, (Instant::now(), health.clone()));
+        }
     }
     health
 }
@@ -306,6 +363,19 @@ pub(crate) fn probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn health_progress_ignores_regular_logs_and_keeps_a_bounded_tail() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let captured = updates.clone();
+        let callback = Arc::new(move |value| captured.lock().unwrap().push(value));
+        let input = format!("{}\nCIA_HEALTH_PROGRESS {{\"label\":\"Checking CUDA\",\"completed\":128,\"total\":256}}\nordinary diagnostic\n", "x".repeat(100000));
+        let tail = read_progress(input.as_bytes(), Some(callback));
+        assert!(tail.len() <= 65536);
+        let updates = updates.lock().unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["completed"], 128);
+        assert_eq!(updates[0]["total"], 256);
+    }
     #[test]
     fn managed_pointer_rejects_absolute_parent_and_prefix_paths() {
         let root = Path::new("C:/runtime");

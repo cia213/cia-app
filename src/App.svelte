@@ -36,6 +36,16 @@
   let isInstallingRifeEnvironment = $state(false);
   let isCancellingInstall = $state(false);
   let isRuntimeLoading = $state(true);
+  let runtimeCheck = $state({ state: 'checking', label: 'Preparing render tools', completed: 0, total: 0, detail: '' });
+  let runtimeNoticeVisible = $state(true);
+  let runtimeCheckId = '';
+  let runtimeCheckPending = false;
+  let runtimeRepairPending = false;
+  let automaticRepairAttempted = false;
+  let runtimeRetryTimer = null;
+  let runtimeProgressSubscription = null;
+  let runtimeDisposed = false;
+  let runtimeInitialization = null;
   let isRecoveringRuntime = $state(false);
   let isSavingRuntime = $state(false);
   let runtimeError = $state('');
@@ -68,7 +78,6 @@
   let bugReportError = $state('');
   let bugReportNotice = $state('');
   let isOpeningBugReport = $state(false);
-  let notifiedRuntimeProblem = '';
 
   // --- RIFE State & Settings ---
   let videoPath = $state('');
@@ -84,6 +93,7 @@
   let rifeFailureLogs = $state(loadFailure('rife').logs || '');
   let smoothieFailureLogs = $state(loadFailure('smoothie').logs || '');
   let installFailureLogs = $state(loadFailure('install').logs || '');
+  let installLogs = $state([]);
   let rifeRecoveryNote = $state('');
   let smoothieRecoveryNote = $state('');
   let activeRenderJobId = $state('');
@@ -237,9 +247,11 @@
   }
 
   function recordFailure(kind, error, notify = true) {
-    appendLog(`[cia render] ${String(error)}`);
-    flushLogs();
-    const diagnostic = redactLog(logs.join('\n')).slice(-128000);
+    if (kind !== 'install' || !activeRenderJobId) {
+      appendLog(`[cia render] ${String(error)}`);
+      flushLogs();
+    }
+    const diagnostic = redactLog(kind === 'install' ? [...installLogs, String(error)].join('\n') : logs.join('\n')).slice(-128000);
     if (kind === 'rife') rifeFailureLogs = diagnostic;
     if (kind === 'smoothie') smoothieFailureLogs = diagnostic;
     if (kind === 'install') installFailureLogs = diagnostic;
@@ -264,19 +276,13 @@
   }
 
   function applyRuntimeSnapshot(snapshot) {
+    if (snapshot.rifeHealth?.status === 'checking' && runtimeSnapshot
+      && JSON.stringify(snapshot.config.rife) === JSON.stringify(runtimeSnapshot.config.rife)) {
+      snapshot = { ...snapshot, rifeReady: runtimeSnapshot.rifeReady, rifeHealth: runtimeSnapshot.rifeHealth };
+    }
     runtimeSnapshot = snapshot;
     setupDraft = cloneConfig(snapshot.config);
     runtimeError = snapshot.loadError || '';
-    notifyRuntimeProblem();
-  }
-
-  function notifyRuntimeProblem() {
-    const error = runtimeError || (activePage === 'dashboard' && runtimeSnapshot?.rifeHealth?.status === 'broken'
-      ? runtimeSnapshot.rifeHealth.detail || 'The interpolation environment could not be verified.' : '');
-    if (!error) { notifiedRuntimeProblem = ''; return; }
-    if (error === notifiedRuntimeProblem) return;
-    notifiedRuntimeProblem = error;
-    recordFailure(runtimeError ? 'runtime' : 'install', error);
   }
 
   async function persistUiPreferences() {
@@ -284,11 +290,12 @@
     try {
       const invalid = settingsValidationError('rife', rifeSettings) || settingsValidationError('smoothie', smoothieSettings);
       if (invalid) throw new Error(invalid);
-      runtimeSnapshot = await invoke('save_ui_preferences', {
+      const snapshot = await invoke('save_ui_preferences', {
         autoRender,
         rifeSettings,
         smoothieSettings
       });
+      applyRuntimeSnapshot(snapshot);
       preferencesWarning = '';
     } catch (e) {
       showToast(`Failed to save preferences: ${e}`, 'error');
@@ -300,12 +307,11 @@
     if (isInstallingRifeEnvironment || isRecoveringRuntime || isSavingRuntime || activeRenderJobId || updateState === 'downloading' || updateState === 'ready') return runtimeSnapshot;
     isRuntimeLoading = true;
     try {
-      const snapshot = await invoke('get_runtime_snapshot');
+      const snapshot = await invoke('get_runtime_overview');
       applyRuntimeSnapshot(snapshot);
       return snapshot;
     } catch (error) {
       runtimeError = String(error);
-      notifyRuntimeProblem();
       throw error;
     } finally { isRuntimeLoading = false; }
   }
@@ -317,7 +323,15 @@
 
   async function initializeRuntime() {
     try {
-      const snapshot = await refreshRuntimeSnapshot();
+      if (!runtimeProgressSubscription) runtimeProgressSubscription = listen('runtime-check-progress', handleRuntimeCheckProgress);
+      await runtimeProgressSubscription;
+      let snapshot = await refreshRuntimeSnapshot();
+      if (snapshot.loadError || !snapshot.smoothieReady || !snapshot.mediaToolsReady) {
+        runtimeCheck = { state: 'repairing', label: 'Restoring bundled render tools', completed: 0, total: 0, detail: '' };
+        snapshot = await invoke('reset_runtime_config', { scope: 'render' });
+        applyRuntimeSnapshot(snapshot);
+        if (snapshot.loadError || !snapshot.smoothieReady || !snapshot.mediaToolsReady) throw new Error('Bundled render tools are missing. Reinstall cia render to restore them.');
+      }
       if (snapshot.config.ui?.migrated) {
         autoRender = Boolean(snapshot.config.ui.autoRender);
         if (hasStoredSettings(snapshot.config.ui.rifeSettings)) {
@@ -329,14 +343,88 @@
       } else {
         if (!snapshot.loadError) await persistUiPreferences();
       }
-      // Smoothie and the media tools are bundled with the app. RIFE is deliberately
-      // opt-in because its CUDA environment is a large download.
       showRuntimeSetup = false;
+      void verifyRuntimeInBackground();
     } catch (e) {
       runtimeError = String(e);
-      notifyRuntimeProblem();
-      showToast(`Runtime setup could not load: ${e}`, 'error');
+      runtimeCheck = { state: 'error', label: 'Render tools need attention', completed: 0, total: 0, detail: runtimeError };
+      recordFailure('runtime', runtimeError, false);
       showRuntimeSetup = false;
+    }
+  }
+
+  async function ensureRenderTools() {
+    if (runtimeInitialization && (!runtimeSnapshot || isRuntimeLoading || isRecoveringRuntime)) await runtimeInitialization;
+    if (!renderRuntimeReady) throw new Error(runtimeError || 'Render tools are not available yet. Check the component notification.');
+  }
+
+  function handleRuntimeCheckProgress(event) {
+    const payload = event?.payload;
+    if (!payload || payload.checkId !== runtimeCheckId || !runtimeCheckPending || runtimeDisposed) return;
+    const total = Number.isFinite(payload.total) && payload.total > 0 ? payload.total : 0;
+    const completed = Number.isFinite(payload.completed) ? Math.max(0, Math.min(total, payload.completed)) : 0;
+    runtimeCheck = { state: 'checking', label: typeof payload.label === 'string' ? payload.label.slice(0, 300) : 'Checking interpolation', completed, total, detail: '' };
+  }
+
+  function deferRuntimeMaintenance() {
+    runtimeCheck = { state: 'waiting', label: 'Component update queued', completed: 0, total: 0, detail: 'It will continue automatically after the current operation.' };
+    runtimeNoticeVisible = true;
+    if (!runtimeRetryTimer && !runtimeDisposed) runtimeRetryTimer = setTimeout(() => {
+      runtimeRetryTimer = null;
+      void resumeRuntimeMaintenance();
+    }, 1500);
+  }
+
+  function retryRuntimeMaintenance() {
+    automaticRepairAttempted = false;
+    if (!renderRuntimeReady) {
+      runtimeInitialization = initializeRuntime();
+    } else void verifyRuntimeInBackground();
+  }
+
+  async function resumeRuntimeMaintenance() {
+    if (runtimeDisposed || runtimeCheckPending || isInstallingRifeEnvironment) return;
+    if (anyProcessing) { deferRuntimeMaintenance(); return; }
+    if (runtimeRepairPending) {
+      runtimeRepairPending = false;
+      automaticRepairAttempted = true;
+      await installRifeEnvironment(runtimeSnapshot?.rifeHealth?.status === 'broken');
+    } else if (runtimeCheck.state === 'waiting') await verifyRuntimeInBackground();
+  }
+
+  async function verifyRuntimeInBackground() {
+    if (runtimeDisposed || runtimeCheckPending || isInstallingRifeEnvironment || !runtimeSnapshot) return;
+    if (anyProcessing) { deferRuntimeMaintenance(); return; }
+    runtimeCheckPending = true;
+    runtimeCheckId = crypto.randomUUID();
+    const checkId = runtimeCheckId;
+    const rifeConfig = JSON.stringify(runtimeSnapshot.config.rife);
+    runtimeNoticeVisible = true;
+    runtimeCheck = { state: 'checking', label: 'Checking interpolation components', completed: 0, total: 0, detail: '' };
+    try {
+      const health = await invoke('check_rife_environment', { checkId });
+      if (runtimeDisposed || checkId !== runtimeCheckId || rifeConfig !== JSON.stringify(runtimeSnapshot.config.rife)) return;
+      runtimeSnapshot = { ...runtimeSnapshot, rifeReady: health.status === 'ready', rifeHealth: health };
+      if (health.status === 'ready') {
+        runtimeCheck = { state: 'ready', label: 'Components are up to date', completed: 1, total: 1, detail: '' };
+        setTimeout(() => { if (runtimeCheck.state === 'ready') runtimeNoticeVisible = false; }, 4000);
+      } else if (health.status === 'busy') {
+        deferRuntimeMaintenance();
+      } else if (['missing', 'broken'].includes(health.status) && !automaticRepairAttempted) {
+        runtimeRepairPending = true;
+      } else {
+        runtimeCheck = { state: 'error', label: 'Interpolation is unavailable', completed: 0, total: 0, detail: health.detail };
+      }
+    } catch (error) {
+      if (runtimeDisposed) return;
+      if (String(error).includes('CIA_RUNTIME_CHECK_DEFERRED')) deferRuntimeMaintenance();
+      else {
+        runtimeCheck = { state: 'error', label: 'Component check failed', completed: 0, total: 0, detail: String(error) };
+        recordFailure('install', String(error), false);
+      }
+    } finally {
+      runtimeCheckPending = false;
+      if (runtimeRepairPending) void resumeRuntimeMaintenance();
     }
   }
 
@@ -463,7 +551,6 @@
     if (!entry) return;
     const requestId = ++historyNavigationRequest;
     activePage = entry.page;
-    notifyRuntimeProblem();
 
     // Navigation owns the displayed page, never the active render or its input.
     if (anyProcessing) return;
@@ -578,7 +665,7 @@
   }
 
   let anyProcessing = $derived(Boolean(activeJob || activeRenderJobId) || isProcessing || isSmoothieProcessing
-    || isInstallingRifeEnvironment || isRuntimeLoading || isRecoveringRuntime || isSavingRuntime
+    || isRecoveringRuntime || isSavingRuntime
     || updateState === 'downloading' || updateState === 'ready');
   let renderRuntimeReady = $derived(Boolean(runtimeSnapshot && !runtimeError && !runtimeSnapshot.loadError
     && runtimeSnapshot.smoothieReady && runtimeSnapshot.mediaToolsReady));
@@ -590,6 +677,9 @@
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
   let smoothieSliderPct = $derived(((smoothieSettings.fps - 20) / (60 - 20)) * 100);
   let hasModal = $derived(Boolean(failureDialog) || showRifeSettings || showSmoothieSettings || showRenderCancelConfirmation || showUpdateModal);
+  let maintenanceTotal = $derived(isInstallingRifeEnvironment ? installContentLength : runtimeCheck.total);
+  let maintenanceCompleted = $derived(isInstallingRifeEnvironment ? installDownloadedBytes : runtimeCheck.completed);
+  let maintenanceLabel = $derived(isInstallingRifeEnvironment ? installLabel || 'Preparing interpolation update' : runtimeCheck.label);
 
   function showToast(message, type = 'info') {
     if (failureDialog) return;
@@ -1129,7 +1219,6 @@
       activePage = page;
       pushNavigation({ page, smoothiePath, videoPath });
     }
-    notifyRuntimeProblem();
   }
 
   function handleInstallProgress(event) {
@@ -1151,6 +1240,12 @@
     if (typeof payload.downloadLabel === 'string') installDownloadLabel = payload.downloadLabel;
   }
 
+  function handleLiveLog(event) {
+    if (typeof event?.payload !== 'string') return;
+    if (isInstallingRifeEnvironment) installLogs = [...installLogs.slice(-511), event.payload];
+    if (!activeRenderJobId) parseLogLine(event.payload);
+  }
+
   $effect(() => {
     const u1 = listen('tauri://drag-drop', async (event) => {
       isDragging = false;
@@ -1163,7 +1258,7 @@
     });
     const u2 = listen('tauri://drag-enter', () => { isDragging = !anyProcessing && activePage !== 'about'; });
     const u3 = listen('tauri://drag-leave', () => { isDragging = false; });
-    const u4 = listen('live-log', (event) => { if (!activeRenderJobId) parseLogLine(event.payload); });
+    const u4 = listen('live-log', handleLiveLog);
     const u5 = listen('install-progress', handleInstallProgress);
     const u6 = listen('render-log', handleRenderLog);
     return () => { u1.then(f => f()); u2.then(f => f()); u3.then(f => f()); u4.then(f => f()); u5.then(f => f()); u6.then(f => f()); };
@@ -1188,6 +1283,8 @@
     clearFailure('rife');
     resetRunState();
     try {
+      if (!renderRuntimeReady) await ensureRenderTools();
+      if (requestId !== rifeSelectionRequest || videoPath !== path || anyProcessing) return;
       const info = await invoke('analyze_video', { videoPath: path });
       if (requestId !== rifeSelectionRequest || videoPath !== path || anyProcessing) return;
       videoInfo = info;
@@ -1395,6 +1492,8 @@
     smoothieOutputPreview = '';
     resetRunState();
     try {
+      if (!renderRuntimeReady) await ensureRenderTools();
+      if (requestId !== smoothieSelectionRequest || smoothiePath !== path || anyProcessing) return;
       const info = await invoke('analyze_video', { videoPath: path });
       if (requestId !== smoothieSelectionRequest || smoothiePath !== path || anyProcessing) return;
       smoothieInfo = info;
@@ -1451,7 +1550,7 @@
   }
 
   async function startSmoothie() {
-    if (!smoothiePath || !smoothieInfo || anyProcessing || isSmoothieLoading || isLoading || isInstallingRifeEnvironment) return;
+    if (!smoothiePath || !smoothieInfo || anyProcessing || isSmoothieLoading || isLoading) return;
     if (!renderRuntimeReady) return;
     const invalid = settingsValidationError('smoothie', smoothieSettings);
     if (invalid) { smoothieJobError = invalid; recordFailure('smoothie', invalid, false); return; }
@@ -1521,6 +1620,9 @@
   async function installRifeEnvironment(repair = false) {
     if (isInstallingRifeEnvironment || anyProcessing) return;
     isInstallingRifeEnvironment = true;
+    installLogs = [];
+    runtimeNoticeVisible = true;
+    runtimeCheck = { state: 'repairing', label: 'Updating interpolation automatically', completed: 0, total: 0, detail: '' };
     isCancellingInstall = false;
     installStep = 0;
     installTotal = 0;
@@ -1533,13 +1635,15 @@
     appendLog('[cia render] Checking for an available RIFE environment');
     try {
       const snapshot = await invoke('install_rife_environment', { repair: repair === true });
-      applyRuntimeSnapshot(snapshot);
+      const currentConfig = runtimeSnapshot?.config;
+      applyRuntimeSnapshot(currentConfig ? { ...snapshot, config: { ...snapshot.config, ui: currentConfig.ui, smoothie: currentConfig.smoothie, mediaTools: currentConfig.mediaTools } } : snapshot);
       if (!snapshot.rifeReady) throw new Error(snapshot.rifeHealth?.detail || 'The interpolation environment could not be verified.');
-      showToast('Interpolation is ready', 'success');
+      runtimeCheck = { state: 'ready', label: 'Components are up to date', completed: 1, total: 1, detail: '' };
+      setTimeout(() => { if (runtimeCheck.state === 'ready') runtimeNoticeVisible = false; }, 4000);
     } catch (e) {
       rifeInstallError = isCancellation(e) ? 'Environment setup cancelled. You can retry safely.' : String(e);
-      recordFailure('install', rifeInstallError, !isCancellation(e));
-      showToast(rifeInstallError, isCancellation(e) ? 'info' : 'error');
+      recordFailure('install', rifeInstallError, false);
+      runtimeCheck = { state: isCancellation(e) ? 'cancelled' : 'error', label: isCancellation(e) ? 'Component update cancelled' : 'Component update failed', completed: 0, total: 0, detail: rifeInstallError };
     } finally {
       isInstallingRifeEnvironment = false;
       isCancellingInstall = false;
@@ -1559,12 +1663,12 @@
     catch (error) {
       isCancellingInstall = false;
       rifeInstallError = `Unable to cancel setup: ${error}`;
-      recordFailure('install', rifeInstallError);
+      recordFailure('install', rifeInstallError, false);
     }
   }
 
   async function recoverRuntime(scope = 'rife') {
-    if (anyProcessing) return;
+    if (anyProcessing || isInstallingRifeEnvironment) return;
     isRecoveringRuntime = true;
     try {
       const snapshot = await invoke('reset_runtime_config', { scope });
@@ -1584,7 +1688,7 @@
   }
 
   async function chooseLut(remove = false) {
-    if (anyProcessing || !runtimeSnapshot || runtimeError) return;
+    if (anyProcessing || isInstallingRifeEnvironment || !runtimeSnapshot || runtimeError) return;
     isSavingRuntime = true;
     smoothieSettingsError = '';
     try {
@@ -1628,7 +1732,7 @@
     return { destroy() {
       node.removeEventListener('keydown', handleKey);
       queueMicrotask(() => {
-        const fallback = ['main .environment-actions button:not(:disabled)', 'main .settings-start:not(:disabled)', 'main .drop-zone[tabindex="0"]', 'main .recovery-actions button:not(:disabled)']
+        const fallback = ['main .settings-start:not(:disabled)', 'main .drop-zone[tabindex="0"]', 'main .recovery-actions button:not(:disabled)']
           .map(selector => document.querySelector(selector)).find(Boolean);
         const target = previous?.isConnected && previous !== document.body && !previous.closest('[inert]') ? previous : fallback;
         target?.focus();
@@ -1679,7 +1783,7 @@
   }
 
   async function saveRuntimeSetup() {
-    if (!setupDraft || anyProcessing) return;
+    if (!setupDraft || anyProcessing || isInstallingRifeEnvironment) return;
     try {
       runtimeSnapshot = await invoke('save_runtime_config', { config: setupDraft });
       setupDraft = cloneConfig(runtimeSnapshot.config);
@@ -1732,7 +1836,7 @@
   }
 
   async function installAppUpdate() {
-    if (!availableUpdate || anyProcessing) return;
+    if (!availableUpdate || anyProcessing || isInstallingRifeEnvironment) return;
     let admitted = false;
     try {
       updateState = 'downloading';
@@ -1773,11 +1877,14 @@
 
   onMount(() => {
     initializeAppVersion();
-    initializeRuntime();
+    runtimeInitialization = initializeRuntime();
     checkForAppUpdates(false);
   });
 
   onDestroy(() => {
+    runtimeDisposed = true;
+    if (runtimeRetryTimer) clearTimeout(runtimeRetryTimer);
+    runtimeProgressSubscription?.then(unlisten => unlisten()).catch(() => {});
     suspendSourcePreviews();
     if (logFlushTimer) clearTimeout(logFlushTimer);
   });
@@ -1836,12 +1943,6 @@
     <div class="active-job-notice" role="status">
       <span>{activeJob.kind === 'rife' ? 'INTERPOLATION' : 'RENDER'} {isRenderPaused ? 'PAUSED' : 'IN PROGRESS'} · {progress}%</span>
       <button class="btn-pro-secondary" onclick={() => navigateTo(activeJob.page)}>SHOW PROCESS</button>
-    </div>
-  {/if}
-  {#if isInstallingRifeEnvironment && activePage !== 'dashboard'}
-    <div class="active-job-notice" role="status" inert={hasModal}>
-      <span>ENVIRONMENT SETUP IN PROGRESS · {installLabel || 'PREPARING'}</span>
-      <button class="btn-pro-secondary" onclick={() => navigateTo('dashboard')}>SHOW SETUP</button>
     </div>
   {/if}
 
@@ -1918,6 +2019,21 @@
   {:else}
   <!-- Main Content Area -->
   <main class="content-area" inert={hasModal}>
+    {#if isInstallingRifeEnvironment}
+      <section class="maintenance-banner" role="status" aria-label="Automatic component update">
+        <div><strong>UPDATING INTERPOLATION AUTOMATICALLY</strong><p>{installLabel || 'Preparing components'}{installTotal > 0 ? ` · Step ${installStep} / ${installTotal}` : ''}. Render remains available.</p></div>
+        <button class="btn-pro-secondary" onclick={cancelRifeInstallation} disabled={isCancellingInstall}>{isCancellingInstall ? 'CANCELLING...' : 'CANCEL SETUP'}</button>
+      </section>
+    {/if}
+    {#if updateState === 'available' && availableUpdate}
+      <section class="maintenance-banner" role="status" aria-label="Application update available">
+        <div><strong>UPDATE AVAILABLE · {availableUpdate.version}</strong><p>A new version of cia render is ready to install.</p></div>
+        <button class="btn-pro-secondary" onclick={() => showUpdateModal = true}>VIEW UPDATE</button>
+      </section>
+    {/if}
+    {#if !runtimeNoticeVisible && ['checking', 'waiting', 'error'].includes(runtimeCheck.state)}
+      <section class="maintenance-banner" role="status"><span>{runtimeCheck.label}</span><button class="btn-pro-secondary" onclick={() => runtimeNoticeVisible = true}>SHOW STATUS</button></section>
+    {/if}
     {#key activePage}
       <div class="page-stage">
       {#if preferencesWarning && activePage !== 'about'}
@@ -1956,53 +2072,7 @@
           <button class="btn-pro-secondary" onclick={() => recoverRuntime('all')} disabled={anyProcessing}>RESET CONFIGURATION</button>
         </section>
       {/if}
-      {#if !runtimeSnapshot?.rifeReady || isInstallingRifeEnvironment}
-        <section class="environment-card" aria-labelledby="rife-environment-title">
-          <div class="environment-status"><span class="pro-dot"></span> {isInstallingRifeEnvironment ? 'INSTALLING ENVIRONMENT' : isRuntimeLoading ? 'CHECKING ENVIRONMENT' : rifeHealth.status.toUpperCase()}</div>
-          <h1 id="rife-environment-title">RIFE INTERPOLATION</h1>
-          <p>Install the local CUDA environment only if you want to multiply frames. RENDER uses bundled tools and does not require this download.</p>
-          {#if rifeHealth.detail}<p class="health-detail" role="status">{rifeHealth.detail}</p>{/if}
-          <div class="environment-meta">
-            <span>RIFE 4.26</span><span>PYTHON + CUDA</span><span>LARGE DOWNLOAD</span>
-          </div>
-          {#if isInstallingRifeEnvironment}
-            <div class="environment-installing">
-              <div class="install-progress-header">
-                <span class="pro-dot active"></span>
-                <span>STEP {installStep} / {installTotal}</span>
-              </div>
-              <div class="install-progress-label">{installLabel || 'PREPARING ENVIRONMENT'}</div>
-              {#if installDownloadLabel || installDownloadedBytes > 0}
-                <div class="install-bytes-readout" role="status">
-                  <span>{installDownloadLabel || 'DOWNLOAD'}</span>
-                  <span>{formatBytes(installDownloadedBytes)} / {installContentLength > 0 ? formatBytes(installContentLength) : 'unknown size'}</span>
-                </div>
-              {/if}
-              <div class="pro-progress-row">
-                <div class="pro-track">
-                  {#if installContentLength > 0}
-                    <div class="install-byte-progress" style:width={`${Math.min(100, Math.max(0, installDownloadedBytes / installContentLength * 100))}%`}></div>
-                  {:else}
-                    <div class="pro-indeterminate-sweep"></div>
-                  {/if}
-                </div>
-              </div>
-            </div>
-            <button class="btn-pro-secondary" onclick={cancelRifeInstallation} disabled={isCancellingInstall}>{isCancellingInstall ? 'CANCELLING SETUP...' : 'CANCEL SETUP'}</button>
-          {:else}
-            <div class="environment-actions">
-              {#if rifeHealth.status !== 'unsupported'}
-                <button class="btn-primary" onclick={() => installRifeEnvironment(rifeHealth.status === 'broken')} disabled={anyProcessing || !!runtimeError || !runtimeSnapshot}>{rifeHealth.status === 'broken' ? 'REPAIR ENVIRONMENT' : 'INSTALL ENVIRONMENT'}</button>
-              {/if}
-              <button class="btn-pro-secondary" onclick={() => refreshRuntimeSnapshot().catch(() => {})} disabled={anyProcessing}>RECHECK</button>
-              {#if rifeHealth.status === 'broken' || rifeHealth.status === 'unsupported'}
-                <button class="btn-pro-secondary" onclick={() => recoverRuntime('rife')} disabled={anyProcessing}>RESET RIFE CONFIGURATION</button>
-                <button class="btn-pro-secondary" onclick={() => navigateTo('smoothie')}>OPEN RENDER</button>
-              {/if}
-            </div>
-          {/if}
-        </section>
-      {:else if !videoPath}
+      {#if !videoPath}
         <div class="drop-zone" class:dragging={isDragging} onclick={pickFile} onkeydown={(event) => activateOnKeyboard(event, pickFile)} role="button" aria-disabled={anyProcessing} tabindex={anyProcessing ? -1 : 0}>
           <div class="drop-center-content">
             <div class="drop-icon-box">
@@ -2130,8 +2200,8 @@
                   <span>AUTO-RENDER AFTER INTERPOLATION</span>
                 </label>
 
-                <button class="btn-pro-secondary settings-start" onclick={startProcessing} disabled={anyProcessing || !renderRuntimeReady}>
-                  {isProcessing ? 'PROCESSING...' : 'START INTERPOLATION'}
+                <button class="btn-pro-secondary settings-start" onclick={startProcessing} disabled={anyProcessing || isInstallingRifeEnvironment || !renderRuntimeReady || !runtimeSnapshot?.rifeReady}>
+                  {runtimeSnapshot?.rifeReady && !isInstallingRifeEnvironment ? 'START INTERPOLATION' : rifeHealth.status === 'unsupported' ? 'INTERPOLATION UNAVAILABLE' : 'PREPARING INTERPOLATION...'}
                 </button>
               </div>
             </section>
@@ -2151,16 +2221,7 @@
           </div>
         </section>
       {/if}
-      {#if !renderRuntimeReady}
-        <section class="environment-card" aria-labelledby="render-runtime-title">
-          <h1 id="render-runtime-title">{isRuntimeLoading ? 'CHECKING RENDER TOOLS' : 'RENDER TOOLS NEED ATTENTION'}</h1>
-          <p>{runtimeError || (isRuntimeLoading ? 'Checking the bundled media tools and saved configuration...' : 'Required media tools are unavailable. Reset custom runtime paths to use the bundled tools, or reinstall cia render if its bundled files are missing.')}</p>
-          <div class="recovery-actions">
-            <button class="btn-pro-secondary" onclick={() => refreshRuntimeSnapshot().catch(() => {})} disabled={anyProcessing}>RECHECK</button>
-            <button class="btn-pro-secondary" onclick={() => recoverRuntime('all')} disabled={anyProcessing}>RESET CONFIGURATION</button>
-          </div>
-        </section>
-      {:else if !smoothiePath}
+      {#if !smoothiePath}
         <div class="drop-zone" class:dragging={isDragging} onclick={pickSmoothieFile} onkeydown={(event) => activateOnKeyboard(event, pickSmoothieFile)} role="button" aria-disabled={anyProcessing} tabindex={anyProcessing ? -1 : 0}>
           <div class="drop-center-content">
             <div class="drop-icon-box">
@@ -2612,9 +2673,9 @@
           {#if updateState === 'downloading' || updateState === 'ready'}
             <span class="update-installing-status">Please wait while the update finishes...</span>
           {:else}
-            {#if anyProcessing}<span class="update-installing-status">Finish or cancel the current operation before updating.</span>{/if}
+            {#if anyProcessing || isInstallingRifeEnvironment}<span class="update-installing-status">Finish or cancel the current operation before updating.</span>{/if}
             <button class="btn-pro-secondary" onclick={() => showUpdateModal = false}>LATER</button>
-            <button class="btn-primary-modal" onclick={installAppUpdate} disabled={anyProcessing}>UPDATE & RELAUNCH</button>
+            <button class="btn-primary-modal" onclick={installAppUpdate} disabled={anyProcessing || isInstallingRifeEnvironment}>UPDATE & RELAUNCH</button>
           {/if}
         </div>
       </div>
@@ -2622,6 +2683,23 @@
   {/if}
 
   <!-- Toast Notification Overlay -->
+  {#if runtimeNoticeVisible}
+    <aside class="runtime-notification" class:runtime-error={runtimeCheck.state === 'error'} role="status" aria-live="polite" aria-label="Component status" inert={hasModal}>
+      <header><strong>{isInstallingRifeEnvironment ? 'UPDATING COMPONENTS' : runtimeCheck.state === 'ready' ? 'READY' : runtimeCheck.state === 'error' ? 'COMPONENT ISSUE' : 'COMPONENT CHECK'}</strong><button onclick={() => runtimeNoticeVisible = false} aria-label="Dismiss component notification">×</button></header>
+      <p>{maintenanceLabel}</p>
+      {#if runtimeCheck.detail && !isInstallingRifeEnvironment}<p class="runtime-notification-detail">{runtimeCheck.detail}</p>{/if}
+      {#if maintenanceTotal > 0}
+        <progress value={maintenanceCompleted} max={maintenanceTotal} aria-label="Current component step progress"></progress>
+        <span>{isInstallingRifeEnvironment ? `${formatBytes(maintenanceCompleted)} / ${formatBytes(maintenanceTotal)}` : `${maintenanceCompleted.toLocaleString()} / ${maintenanceTotal.toLocaleString()}`}</span>
+      {:else if ['checking', 'repairing'].includes(runtimeCheck.state)}
+        <progress aria-label="Current component step progress"></progress>
+      {/if}
+      {#if isInstallingRifeEnvironment && installTotal > 0}<span>Step {installStep} / {installTotal}</span>{/if}
+      {#if runtimeCheck.state === 'error'}<button class="btn-pro-secondary" onclick={() => openFailureDialog(renderRuntimeReady ? 'install' : 'runtime', runtimeCheck.detail, installFailureLogs)}>VIEW ERROR</button>{/if}
+      {#if ['error', 'cancelled'].includes(runtimeCheck.state) && !isInstallingRifeEnvironment}<button class="btn-pro-secondary" onclick={retryRuntimeMaintenance}>RETRY</button>{/if}
+    </aside>
+  {/if}
+
   {#if toast.show}
     <div class="toast" class:success={toast.type === 'success'} class:error={toast.type === 'error'}>
       {toast.message}
@@ -2630,6 +2708,18 @@
 </div>
 
 <style>
+  .maintenance-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; padding: 12px 16px; margin-bottom: 12px; border: 1px solid #27272a; border-radius: 8px; background: #101012; font-size: 10px; }
+  .maintenance-banner p { margin: 6px 0 0; color: #a1a1aa; line-height: 1.5; }
+  .maintenance-banner button { flex-shrink: 0; }
+  .runtime-notification { position: fixed; right: 16px; bottom: 16px; z-index: 2000; width: min(340px, calc(100vw - 32px)); padding: 12px 14px; border: 1px solid #343438; border-radius: 9px; background: #111113; box-shadow: 0 8px 28px #0008; font-size: 10px; pointer-events: none; }
+  .runtime-notification header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .runtime-notification header button { padding: 0 4px; border: 0; background: transparent; color: #a1a1aa; font-size: 18px; cursor: pointer; }
+  .runtime-notification button { pointer-events: auto; }
+  .runtime-notification p { margin: 8px 0; line-height: 1.5; overflow-wrap: anywhere; }
+  .runtime-notification .runtime-notification-detail { color: #a1a1aa; max-height: 64px; overflow-y: auto; }
+  .runtime-notification progress { display: block; width: 100%; height: 5px; margin: 10px 0 8px; accent-color: #fafafa; }
+  .runtime-notification > span { display: block; margin-top: 4px; color: #a1a1aa; }
+  .runtime-error { border-color: #583339; }
   .failure-card {
     flex-shrink: 0;
     width: 100%;
@@ -2640,14 +2730,14 @@
     background: #130d10;
     font-size: 11px;
   }
-  .failure-card p, .health-detail {
+  .failure-card p {
     margin: 8px 0;
     line-height: 1.5;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     user-select: text;
   }
-  .recovery-actions, .environment-actions, .lut-picker {
+  .recovery-actions, .lut-picker {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -2664,9 +2754,6 @@
   .recovery-note { max-width: 460px; font-size: 11px; line-height: 1.5; color: #a1a1aa; text-align: center; }
   .lut-picker { margin-bottom: 12px; }
   .lut-picker span { flex: 1 1 140px; overflow-wrap: anywhere; font-size: 11px; }
-  .environment-installing + button { margin-top: 12px; }
-  .install-bytes-readout { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: #a1a1aa; font-size: 10px; overflow-wrap: anywhere; }
-  .install-byte-progress { height: 100%; background: #e4e4e7; transition: width 160ms ease; }
   .page-stage { flex-shrink: 0; }
   .active-job-notice {
     display: flex;
@@ -3013,85 +3100,10 @@
     margin-top: 16px;
   }
 
-  .environment-card {
-    width: min(100%, 640px);
-    margin: auto;
-    padding: 26px;
-    border: 1px solid #27272a;
-    border-radius: 8px;
-    background: #09090c;
-  }
-
-  .environment-status {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    color: #a1a1aa;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.09em;
-  }
-
-  .environment-card h1 {
-    margin: 12px 0 9px;
-    color: #fff;
-    font-size: 22px;
-    letter-spacing: 0.04em;
-  }
-
-  .environment-card p {
-    max-width: 550px;
-    margin: 0;
-    color: #a1a1aa;
-    font-size: 12px;
-    line-height: 1.55;
-  }
-
-  .environment-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin: 18px 0;
-  }
-
-  .environment-meta span {
-    padding: 4px 6px;
-    border: 1px solid #27272a;
-    border-radius: 3px;
-    color: #71717a;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.04em;
-  }
-
-  .environment-actions,
-  .environment-installing {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .environment-installing {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-    color: #e4e4e7;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.04em;
-  }
-
   .install-progress-header {
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-
-  .install-progress-label {
-    font-size: 11px;
-    color: #a1a1aa;
-    letter-spacing: 0.06em;
   }
 
   @media (max-width: 720px) {
@@ -3638,28 +3650,6 @@
   }
 
   /* Buttons */
-  .btn-primary {
-    width: 100%;
-    padding: 12px;
-    background: #18181b;
-    color: #ffffff;
-    border: 0;
-    border-radius: 6px;
-    font-weight: 700;
-    font-size: 12px;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: #242429;
-    border-color: rgba(255, 255, 255, 0.4);
-    box-shadow: 0 0 15px rgba(255, 255, 255, 0.08);
-  }
-
-  .btn-primary:disabled { opacity: 0.3; cursor: not-allowed; }
-
   .btn-secondary {
     margin-top: 10px;
     padding: 8px 14px;

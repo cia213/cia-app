@@ -1,5 +1,7 @@
 import importlib.util
+import io
 import json
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +15,31 @@ SPEC.loader.exec_module(health)
 
 
 class RuntimeHealthTests(unittest.TestCase):
+    def test_file_progress_counts_verified_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {}
+            for index in range(129):
+                path = root / f"component-{index}.txt"
+                path.write_bytes(b"fixture")
+                files[path.name] = health.sha256(path)
+            output = io.StringIO()
+            with patch.object(health, "progress_enabled", True), redirect_stderr(output):
+                health.verify_files(root, files)
+            events = [json.loads(line.removeprefix("CIA_HEALTH_PROGRESS ")) for line in output.getvalue().splitlines()]
+            self.assertEqual([event["completed"] for event in events], [0, 128, 129])
+            self.assertTrue(all(event["total"] == 129 for event in events))
+
+    def test_temporary_gpu_exhaustion_is_busy_instead_of_broken(self):
+        output = io.StringIO()
+        with patch.object(health.sys, "argv", ["health", "--rife-dir", ".", "--model-dir", ".", "--json"]), \
+             patch.object(health, "read_profile", return_value={}), \
+             patch.object(health, "verify_runtime", return_value="2.10.0"), \
+             patch.object(health, "forward_probe", side_effect=RuntimeError("CUDA out of memory")), \
+             redirect_stdout(output):
+            self.assertEqual(health.main(), 1)
+        self.assertEqual(json.loads(output.getvalue())["status"], "busy")
+
     def test_rejects_corrupt_present_component(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

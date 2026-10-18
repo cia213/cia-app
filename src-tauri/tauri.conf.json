@@ -1,6 +1,6 @@
 {
   "productName": "cia render",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "identifier": "io.github.cia213.ciaapp",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -15,7 +15,7 @@
       "nsis"
     ],
     "shortDescription": "Local video interpolation and rendering.",
-    "longDescription": "cia render is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Smoothie and media tools are included; the optional RIFE environment is installed only when requested.",
+    "longDescription": "cia render is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Render tools are included; interpolation components are checked, installed and repaired automatically with visible progress.",
     "resources": [
       "resources/time_remap.py",
       "resources/rife_worker.py",

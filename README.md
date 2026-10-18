@@ -5,8 +5,9 @@ cia render is a local Windows desktop app for two video operations:
 - **RENDER** - smoothie-rs frame blending and render finishing.
 - **INTERPOLATION** - optional RIFE frame multiplication.
 
-Your media stays on the computer. cia render does not upload source videos or
-silently fetch render engines.
+Your media stays on the computer. cia render does not upload source videos.
+Render tools are bundled; interpolation components are checked and installed or
+repaired automatically, with visible progress.
 
 ## Render Preview
 
@@ -38,15 +39,16 @@ Download the latest Windows installer from the
 launching the app is enough to start using **RENDER** - no setup wizard, no
 extra downloads.
 
-**INTERPOLATION** is optional and downloads a separate RIFE environment on
-first use. It requires a CUDA-capable NVIDIA GPU. See
+**INTERPOLATION** uses a separate RIFE environment. A background check starts at
+launch; missing or broken components trigger automatic installation or repair
+on compatible NVIDIA hardware. A bottom-right notification shows real check
+steps, file counts and download progress, while **RENDER** remains usable. See
 [Install and first launch](docs/INSTALL.md) for details.
 
-v1.3.0 verifies the complete RIFE environment before reporting it ready and
-provides **REPAIR ENVIRONMENT** for an incomplete or outdated installation.
-It also preserves audio tracks and timing, keeps failure diagnostics visible,
-and prevents conflicting operations. See the [release notes](docs/RELEASE-v1.3.0.md)
-and [validation scope](docs/VALIDATION-v1.3.0.md).
+Component updates and application updates appear in the main workspace. A failed
+background check or repair does not open a blocking dialog; error details and
+reporting remain available on request. See the [release notes](docs/RELEASE-v1.3.2.md)
+and the earlier [GPU validation scope](docs/VALIDATION-v1.3.0.md).
 
 ## Build from source
 
@@ -56,14 +58,14 @@ build tools. The source checks use the committed npm and Cargo lockfiles.
 ```powershell
 npm ci
 python scripts/prepare-release.py
-npm run tauri dev -- --config src-tauri/target/release-kit-v1.3.0/build.json
+npm run tauri dev -- --config src-tauri/target/release-kit-v1.3.2/build.json
 ```
 
 Prepare the verified render payload and create an NSIS installer:
 
 ```powershell
 python scripts/prepare-release.py
-npm run tauri build -- --config src-tauri/target/release-kit-v1.3.0/build.json
+npm run tauri build -- --config src-tauri/target/release-kit-v1.3.2/build.json
 ```
 
 The preparation script downloads pinned archives, verifies their hashes, and

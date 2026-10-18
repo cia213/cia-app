@@ -45,6 +45,10 @@ function makeContext(overrides = {}) {
     rifeRecoveryNote: '', smoothieRecoveryNote: '',
     updateState: 'idle', availableUpdate: null, updateErrorMessage: '',
     installStep: 0, installTotal: 0, installLabel: '', setupDraft: null,
+    installLogs: [], runtimeCheck: { state: 'ready', label: '', detail: '', completed: 1, total: 1 },
+    runtimeNoticeVisible: false, runtimeCheckId: '', runtimeCheckPending: false, runtimeRepairPending: false,
+    automaticRepairAttempted: false, runtimeRetryTimer: null, runtimeProgressSubscription: null, runtimeDisposed: false, runtimeInitialization: null,
+    listen: async () => () => {},
     installDownloadedBytes: 0, installContentLength: 0, installDownloadLabel: '',
     isComplete: false, isSmoothieComplete: false,
     isRenderPaused: false, isCancellingRender: false,
@@ -414,30 +418,40 @@ test('RIFE installation keeps the complete diagnostic and clears it when retry s
   });
   await ctx.installRifeEnvironment();
   assert.equal(ctx.rifeInstallError, detail);
-  assert.equal(notices.at(-1).message, detail);
+  assert.equal(ctx.runtimeCheck.detail, detail);
+  assert.equal(ctx.failureDialog, null);
   assert.equal(ctx.isInstallingRifeEnvironment, false);
   await ctx.installRifeEnvironment();
   assert.equal(ctx.rifeInstallError, '');
   assert.equal(ctx.runtimeSnapshot.rifeReady, true);
-  assert.equal(notices.at(-1).type, 'success');
+  assert.equal(ctx.runtimeCheck.state, 'ready');
+  assert.equal(notices.length, 0);
 });
 
-test('environment setup prevents update installation and rendering until it ends', async () => {
+test('environment setup allows Render while protecting interpolation and app updates', async () => {
   const installing = deferred();
+  const rendering = deferred();
   let updateCalled = false;
+  const commands = [];
   const { ctx, calls } = makeContext({
-    smoothiePath: 'A.mp4', smoothieInfo: media,
+    smoothiePath: 'A.mp4', smoothieInfo: media, videoPath: 'A.mp4', videoInfo: media,
     availableUpdate: { downloadAndInstall: async () => { updateCalled = true; } },
-    invoke: async command => command === 'install_rife_environment' ? installing.promise : null
+    invoke: async command => { commands.push(command); return command === 'install_rife_environment' ? installing.promise : command === 'run_smoothie' ? rendering.promise : null; }
   });
   const pending = ctx.installRifeEnvironment();
   await ctx.installAppUpdate();
-  await ctx.startSmoothie();
+  await ctx.startProcessing();
   assert.equal(updateCalled, false);
   assert.equal(ctx.activeJob, null);
-  assert.equal(ctx.anyProcessing, true);
+  assert.equal(ctx.anyProcessing, false);
+  const render = ctx.startSmoothie();
+  assert.equal(ctx.activeJob.kind, 'smoothie');
+  assert.deepEqual(commands, ['install_rife_environment', 'run_smoothie']);
   installing.resolve({ config: { rife: {}, smoothie: {} }, rifeReady: true });
   await pending;
+  assert.equal(ctx.isSmoothieProcessing, true);
+  rendering.resolve('rendered.mp4');
+  await render;
   assert.equal(ctx.anyProcessing, false);
   assert.equal(calls.length, 0);
 });
@@ -512,7 +526,7 @@ test('stored preferences migrate numeric strings and replace invalid fields safe
 test('runtime load failure keeps configuration recovery available and version resolves independently', async () => {
   const loading = deferred();
   const { ctx } = makeContext({
-    invoke: command => command === 'get_runtime_snapshot' ? loading.promise : Promise.resolve('1.3.0')
+    invoke: command => command === 'get_runtime_overview' ? loading.promise : command === 'reset_runtime_config' ? Promise.reject('Automatic recovery failed') : Promise.resolve('1.3.0')
   });
   const initialization = ctx.initializeRuntime();
   await ctx.initializeAppVersion();
@@ -520,9 +534,103 @@ test('runtime load failure keeps configuration recovery available and version re
   assert.equal(ctx.isRuntimeLoading, true);
   loading.resolve({ config: { ui: { migrated: true } }, loadError: 'Invalid config.json' });
   await initialization;
-  assert.equal(ctx.runtimeError, 'Invalid config.json');
+  assert.equal(ctx.runtimeError, 'Automatic recovery failed');
   assert.equal(ctx.renderRuntimeReady, false);
   assert.equal(ctx.isRuntimeLoading, false);
+  assert.equal(ctx.failureDialog, null);
+  assert.equal(ctx.runtimeCheck.state, 'error');
+});
+
+test('startup releases Render before the interpolation check completes and keeps newer preferences', async () => {
+  const checking = deferred();
+  const rendering = deferred();
+  const commands = [];
+  const snapshot = { config: { rife: {}, smoothie: {}, ui: { migrated: true } }, smoothieReady: true, mediaToolsReady: true, rifeReady: false, rifeHealth: { status: 'checking' } };
+  const { ctx } = makeContext({ runtimeSnapshot: null, isRuntimeLoading: true, smoothiePath: 'input.mp4', smoothieInfo: media,
+    invoke: async command => { commands.push(command); return command === 'get_runtime_overview' ? snapshot : command === 'check_rife_environment' ? checking.promise : command === 'run_smoothie' ? rendering.promise : null; }
+  });
+  await ctx.initializeRuntime();
+  assert.equal(ctx.isRuntimeLoading, false);
+  assert.equal(ctx.renderRuntimeReady, true);
+  assert.equal(ctx.runtimeCheckPending, true);
+  assert.equal(ctx.anyProcessing, false);
+  const running = ctx.startSmoothie();
+  assert.ok(commands.includes('run_smoothie'));
+  ctx.runtimeSnapshot = { ...ctx.runtimeSnapshot, config: { ...ctx.runtimeSnapshot.config, ui: { migrated: true, autoRender: true } } };
+  checking.resolve({ status: 'ready', detail: 'Verified' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ctx.runtimeSnapshot.rifeReady, true);
+  assert.equal(ctx.runtimeSnapshot.config.ui.autoRender, true);
+  assert.equal(ctx.isSmoothieProcessing, true);
+  rendering.resolve('output.mp4');
+  await running;
+});
+
+test('a broken environment starts one automatic repair and failed repair stays non-modal', async () => {
+  const installing = deferred();
+  const commands = [];
+  const { ctx } = makeContext({ invoke: async command => {
+    commands.push(command);
+    return command === 'check_rife_environment' ? { status: 'broken', detail: 'Incomplete runtime' } : installing.promise;
+  } });
+  const installHandler = ctx.installRifeEnvironment;
+  let repair;
+  ctx.installRifeEnvironment = value => { repair = installHandler(value); return repair; };
+  await ctx.verifyRuntimeInBackground();
+  assert.equal(ctx.isInstallingRifeEnvironment, true);
+  assert.equal(ctx.automaticRepairAttempted, true);
+  assert.deepEqual(commands, ['check_rife_environment', 'install_rife_environment']);
+  installing.reject('Network unavailable');
+  await repair;
+  assert.equal(ctx.runtimeCheck.state, 'error');
+  assert.equal(ctx.failureDialog, null);
+  await ctx.verifyRuntimeInBackground();
+  assert.equal(commands.filter(command => command === 'install_rife_environment').length, 1);
+});
+
+test('component progress accepts only its current check and clamps invalid counters', () => {
+  const { ctx } = makeContext({ runtimeCheckPending: true, runtimeCheckId: 'current' });
+  ctx.handleRuntimeCheckProgress({ payload: { checkId: 'old', label: 'Stale', completed: 1, total: 2 } });
+  assert.equal(ctx.runtimeCheck.state, 'ready');
+  ctx.handleRuntimeCheckProgress({ payload: { checkId: 'current', label: 'Verifying files', completed: 15, total: 10 } });
+  assert.equal(ctx.runtimeCheck.label, 'Verifying files');
+  assert.equal(ctx.runtimeCheck.completed, 10);
+  assert.equal(ctx.runtimeCheck.total, 10);
+});
+
+test('a clip selected immediately at launch waits only for the fast overview', async () => {
+  const overview = deferred();
+  const commands = [];
+  const { ctx } = makeContext({ runtimeSnapshot: null, isRuntimeLoading: true, runtimeInitialization: overview.promise,
+    invoke: async command => { commands.push(command); return command === 'analyze_video' ? media : null; }
+  });
+  const selection = ctx.loadSmoothie('early.mp4');
+  assert.equal(ctx.smoothiePath, 'early.mp4');
+  assert.equal(ctx.isSmoothieLoading, true);
+  assert.equal(commands.length, 0);
+  ctx.runtimeSnapshot = { config: { rife: {}, smoothie: {}, ui: {} }, smoothieReady: true, mediaToolsReady: true, rifeReady: false, rifeHealth: { status: 'checking' } };
+  ctx.isRuntimeLoading = false;
+  overview.resolve();
+  await selection;
+  assert.equal(ctx.smoothieInfo.fps, media.fps);
+  assert.equal(ctx.runtimeSnapshot.rifeReady, false);
+});
+
+test('setup completion preserves preferences edited during setup and separate render diagnostics', async () => {
+  const installing = deferred();
+  const { ctx } = makeContext({ invoke: async () => installing.promise });
+  const setup = ctx.installRifeEnvironment(true);
+  ctx.runtimeSnapshot.config.ui = { autoRender: true };
+  ctx.activeRenderJobId = 'render-during-setup';
+  ctx.logs = ['only render data'];
+  ctx.pendingLogs = [];
+  ctx.handleLiveLog({ payload: 'only setup data' });
+  installing.resolve({ config: { rife: { directory: 'new generation' }, smoothie: {}, ui: { autoRender: false } }, rifeReady: true, rifeHealth: { status: 'ready' } });
+  await setup;
+  assert.equal(ctx.runtimeSnapshot.config.ui.autoRender, true);
+  assert.equal(ctx.runtimeSnapshot.config.rife.directory, 'new generation');
+  assert.deepEqual(ctx.logs, ['only render data']);
+  assert.ok(ctx.installLogs.includes('only setup data'));
 });
 
 test('setup cancellation targets the installer operation and waits for completion', async () => {

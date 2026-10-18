@@ -247,10 +247,17 @@ def main() -> int:
         actual_version = driver.invoke("get_app_version")
         assert actual_version == args.expected_version, actual_version
         evidence["checks"]["native_version"] = actual_version
-        snapshot = driver.invoke("get_runtime_snapshot")
+        driver.execute("window.ciaQualificationRuntimeSteps=[]; const record=()=>{const n=document.querySelector('.runtime-notification'); const label=n?.querySelector('p')?.textContent; if(label && window.ciaQualificationRuntimeSteps.at(-1)!==label) window.ciaQualificationRuntimeSteps.push(label);}; record(); new MutationObserver(record).observe(document.querySelector('.app-root'),{subtree:true,childList:true,characterData:true});")
+        overview_start = time.monotonic()
+        snapshot = driver.invoke("get_runtime_overview")
+        evidence["checks"]["quick_overview_seconds"] = round(time.monotonic() - overview_start, 3)
         assert snapshot["smoothieReady"] and snapshot["mediaToolsReady"] and not snapshot.get("loadError"), "Bundled Render tools/configuration are not ready"
         evidence["checks"]["bundled_render_ready"] = True
         evidence["checks"]["rife_health_status"] = snapshot.get("rifeHealth", {}).get("status")
+        assert driver.execute("return !!document.querySelector('.drop-zone') && !document.querySelector('[role=dialog]') && !document.querySelector('.environment-card');")
+        evidence["checks"]["render_workspace_available_without_full_interpolation_check"] = True
+        evidence["checks"]["background_notification_visible_on_attach"] = driver.execute("return !!document.querySelector('.runtime-notification');")
+        driver.screenshot(destination / "background-check-native.png")
         duplicate = subprocess.Popen([str(application)], stdout=log, stderr=subprocess.STDOUT, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
         try:
             assert duplicate.wait(timeout=15) == 0, "The second application instance did not exit successfully"
@@ -280,6 +287,7 @@ def main() -> int:
             assert driver.execute("return !!document.querySelector('.lut-picker');")
             driver.command("/execute/sync", {"script": "document.querySelector('[aria-label=\"Close render settings\"]').click();", "args": []})
             driver.click_text("START RENDER")
+            evidence["checks"]["component_notice_during_render"] = driver.execute("return document.querySelector('.runtime-notification')?.textContent || ''; ")
             def render_finished():
                 failure = driver.execute("return document.querySelector('.failure-card[role=alert]')?.textContent || ''; ")
                 if failure:
@@ -290,14 +298,16 @@ def main() -> int:
             evidence["checks"]["source_selection_boundary"] = "Real Tauri drag-drop event emitted by harness; native OS file picker/drag gesture not tested."
             driver.screenshot(destination / "render-native.png")
             if args.interpolate:
-                assert snapshot.get("rifeReady"), "Interpolation requires a healthy preinstalled environment"
                 driver.click_text("INTERPOLATION")
                 driver.wait(lambda: driver.execute("return !!document.querySelector('.drop-zone');"), "Interpolation source picker")
                 assert driver.execute("return !document.querySelector('.runtime-toolbar') && !document.querySelector('[role=dialog]') && [...document.querySelectorAll('button')].every(e=>!['RECHECK','REPAIR ENVIRONMENT'].includes(e.textContent.trim()));")
                 evidence["checks"]["healthy_interpolation_has_no_maintenance_controls_or_popup"] = True
                 driver.screenshot(destination / "interpolation-ready-native.png")
                 driver.invoke("plugin:event|emit", {"event": "tauri://drag-drop", "payload": {"paths": [str(video)]}})
-                driver.wait(lambda: driver.execute("return [...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='START INTERPOLATION');"), "interpolation analysis")
+                driver.wait(lambda: driver.execute("return [...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='START INTERPOLATION'&&!e.disabled);"), "interpolation analysis and background verification")
+                snapshot = driver.invoke("get_runtime_snapshot")
+                assert snapshot.get("rifeReady"), "Interpolation requires a healthy preinstalled environment"
+                evidence["checks"]["rife_health_status"] = snapshot.get("rifeHealth", {}).get("status")
                 driver.click_text("START INTERPOLATION")
                 driver.wait(render_finished, "real RIFE interpolation")
                 evidence["checks"]["real_ui_interpolation"] = True
@@ -314,6 +324,7 @@ def main() -> int:
                 evidence["checks"]["bug_report_not_submitted"] = True
                 driver.screenshot(destination / "error-popup-native.png")
                 driver.execute("document.querySelector('[aria-label=\"Close error report\"]').click();")
+        evidence["checks"]["visible_background_check_stages"] = driver.execute("return window.ciaQualificationRuntimeSteps.slice(0,100);")
         assert not driver.execute("return window.ciaQualificationCsp;")
         evidence["checks"]["csp_violations_during_navigation_and_operations"] = 0
         evidence["status"] = "passed"

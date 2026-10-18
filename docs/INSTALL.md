@@ -8,8 +8,9 @@ wizard, or a machine-wide `PATH` dependency.
 
 ## Optional interpolation environment
 
-**INTERPOLATION** downloads its private environment only when you select
-**INSTALL ENVIRONMENT**. The v1.3.0 profile is Practical-RIFE 4.26, Python 3.11.9
+At launch, cia render checks interpolation in the background. Missing or broken
+components trigger automatic installation or repair, with no confirmation step.
+The v1.3 profile is Practical-RIFE 4.26, Python 3.11.9
 x64, PyTorch 2.10.0 with CUDA 12.8, and torchvision 0.25.0. The download is several
 gigabytes; the Torch wheel alone is approximately 2.9 GB.
 
@@ -43,13 +44,22 @@ A full health check can take tens of seconds on the first check.
 
 Once interpolation is available, the page shows your clip workspace without an
 **ENVIRONMENT READY** label or routine **RECHECK** / **REPAIR ENVIRONMENT** buttons.
-Environment verification still runs in the background. First-time setup remains
-available when the optional environment is missing; recovery actions appear only
-when a problem needs attention. Older environments using Torch 2.5.1 are not
+Environment verification runs in a bottom-right, non-modal notification. It shows
+the current step and verified file counts when available; downloads show actual
+bytes rather than an estimated overall percentage. Navigation, clip selection,
+settings and classic rendering remain usable. Only interpolation waits for its
+components. Older environments using Torch 2.5.1 are not
 accepted as the v1.3.0 profile; repair creates the new verified environment.
 Downloads display byte progress, retry transient failures, and reuse only verified
-cached artifacts. **CANCEL SETUP** stops installation without promoting its
-unfinished generation.
+cached artifacts. An in-page banner shows component updates and available app
+updates. **CANCEL SETUP** stops installation without promoting its unfinished
+generation. A repair failure stays in the notification; **RETRY** explicitly
+starts another attempt instead of creating an endless download loop.
+
+Invalid saved render paths are restored automatically to the bundled tools.
+Invalid configuration is backed up before recovery. Missing packaged files or
+unsupported GPU hardware cannot be fixed by downloading the RIFE environment;
+the notification explains the failure and keeps unaffected features available.
 
 An actual operation failure opens a popup with its error and reporting actions.
 Cancelling an operation does not open a bug popup. Failure messages and bounded
@@ -64,10 +74,10 @@ use **COPY REPORT** for the complete report. There is no automatic telemetry or
 background transmission of diagnostics. Native process logs stay under the
 application's local app-data `diagnostics` directory.
 
-**RESET RIFE CONFIGURATION** clears RIFE path overrides so the managed environment
-can be selected again. If configuration itself is invalid, **RESET CONFIGURATION**
-backs up the old file and restores bundled-tool defaults. These actions preserve
-your source videos. The About page has no advanced-runtime-paths button.
+Recovery preserves source videos. The About page has no advanced-runtime-paths
+button. Application updates wait for renders or component installation to finish;
+one component installation and one classic render may run together, each with
+its own process ownership, cancellation and diagnostics.
 
 Configuration and UI preferences are stored per user in `config.json` under the
 application's app-data directory. They are excluded from Git, installers and

@@ -11,6 +11,14 @@ import struct
 import sys
 import types
 
+progress_enabled = False
+
+
+def emit_progress(phase, label, completed=0, total=0):
+    if progress_enabled:
+        print("CIA_HEALTH_PROGRESS " + json.dumps({"phase": phase, "label": label,
+              "completed": completed, "total": total}, separators=(",", ":")), file=sys.stderr, flush=True)
+
 
 class HealthError(RuntimeError):
     def __init__(self, message, status="broken"):
@@ -43,13 +51,16 @@ def torch_version_tuple(version):
     return tuple(map(int, match.groups()))
 
 
-def verify_files(root, files):
+def verify_files(root, files, label="Verifying runtime files"):
     if not isinstance(files, dict) or not files:
         raise HealthError("The runtime integrity manifest has no verified files.")
-    for relative, expected in files.items():
+    emit_progress("files", label, 0, len(files))
+    for index, (relative, expected) in enumerate(files.items(), 1):
         path = child_path(root, relative)
         if not path.is_file() or sha256(path).lower() != expected.lower():
             raise HealthError(f"Runtime integrity check failed: {relative}. Use Repair environment.")
+        if index % 128 == 0 or index == len(files):
+            emit_progress("files", label, index, len(files))
 
 
 def verify_project_code_set(rife_dir, profile):
@@ -92,8 +103,8 @@ def verify_runtime(rife_dir, model_dir, manifest_path, profile, full_integrity=T
             verify_files(root, manifest.get("files"))
         # The trusted bundled profile, rather than a writable per-user manifest,
         # determines the expected upstream project and model content.
-        verify_files(rife_dir, profile["projectFiles"])
-        verify_files(model_dir, profile["modelFiles"])
+        verify_files(rife_dir, profile["projectFiles"], "Verifying interpolation code")
+        verify_files(model_dir, profile["modelFiles"], "Verifying model files")
         verify_project_code_set(rife_dir, profile)
         expected_packages = profile["packages"]
         if Path(sys.base_prefix).resolve() != child_path(root, "python"):
@@ -126,11 +137,13 @@ def verify_runtime(rife_dir, model_dir, manifest_path, profile, full_integrity=T
 
 
 def forward_probe(rife_dir, model_dir, profile, device_index=0):
+    emit_progress("packages", "Loading interpolation dependencies")
     # Dependencies must resolve from the isolated interpreter before the selected
     # model directory is added; an unrelated project torch.py must not shadow them.
     import numpy  # noqa: F401
     import torch
     import torchvision  # noqa: F401
+    emit_progress("cuda", "Testing the NVIDIA GPU and CUDA kernels")
     if not torch.cuda.is_available():
         raise HealthError("CUDA is unavailable. Install a supported NVIDIA driver and retry.", "unsupported")
     if device_index < 0 or device_index >= torch.cuda.device_count():
@@ -153,6 +166,7 @@ def forward_probe(rife_dir, model_dir, profile, device_index=0):
     package.__path__ = [str(model_dir)]
     sys.modules["train_log"] = package
     torch.set_grad_enabled(False)
+    emit_progress("model", "Testing interpolation model inference")
     with redirect_stdout(sys.stderr):
         model = importlib.import_module("train_log.RIFE_HDv3").Model()
         if getattr(model, "version", 0) < 3.9:
@@ -186,13 +200,16 @@ def forward_probe(rife_dir, model_dir, profile, device_index=0):
 
 
 def main():
+    global progress_enabled
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rife-dir", required=True, type=Path)
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--progress", action="store_true")
     args = parser.parse_args()
+    progress_enabled = args.progress
     result = {"status": "broken", "ready": False, "detail": "", "profileId": None}
     try:
         profile = read_profile()
@@ -200,8 +217,11 @@ def main():
         result["torchVersion"] = verify_runtime(args.rife_dir.resolve(), args.model_dir.resolve(), args.manifest, profile)
         result["device"] = forward_probe(args.rife_dir.resolve(), args.model_dir.resolve(), profile, args.device_index)
         result.update(status="ready", ready=True, detail="Python, dependency integrity, CUDA kernels and RIFE model inference verified.")
+        emit_progress("complete", "Interpolation is ready", 1, 1)
     except Exception as error:
         result.update(status=getattr(error, "status", "broken"), detail=str(error).replace("\n", " ")[:2000])
+        if "out of memory" in str(error).lower():
+            result["status"] = "busy"
     print(json.dumps(result, ensure_ascii=True, separators=(",", ":")), flush=True)
     return 0 if result["ready"] else 1
 
