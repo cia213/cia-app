@@ -86,6 +86,8 @@ function makeContext(overrides = {}) {
   Object.defineProperties(ctx, {
     anyProcessing: { get: () => vm.runInContext(derivedExpressions.anyProcessing, ctx) },
     renderRuntimeReady: { get: () => vm.runInContext(derivedExpressions.renderRuntimeReady, ctx) },
+    rifeHealth: { get: () => vm.runInContext(derivedExpressions.rifeHealth, ctx) },
+    canInterpolate: { get: () => vm.runInContext(derivedExpressions.canInterpolate, ctx) },
     hasConfiguredLut: { get: () => vm.runInContext(derivedExpressions.hasConfiguredLut, ctx) },
     canGoBack: { get: () => ctx.historyIndex > 0 },
     canGoForward: { get: () => ctx.historyIndex < ctx.historyStack.length - 1 },
@@ -541,24 +543,29 @@ test('runtime load failure keeps configuration recovery available and version re
   assert.equal(ctx.runtimeCheck.state, 'error');
 });
 
-test('startup releases Render before the interpolation check completes and keeps newer preferences', async () => {
+test('startup leaves diagnostics idle; a manual check keeps Render and newer preferences usable', async () => {
   const checking = deferred();
   const rendering = deferred();
   const commands = [];
-  const snapshot = { config: { rife: {}, smoothie: {}, ui: { migrated: true } }, smoothieReady: true, mediaToolsReady: true, rifeReady: false, rifeHealth: { status: 'checking' } };
+  const snapshot = { config: { rife: {}, smoothie: {}, ui: { migrated: true } }, smoothieReady: true, mediaToolsReady: true, rifeReady: false, rifeHealth: { status: 'unchecked' } };
   const { ctx } = makeContext({ runtimeSnapshot: null, isRuntimeLoading: true, smoothiePath: 'input.mp4', smoothieInfo: media,
     invoke: async command => { commands.push(command); return command === 'get_runtime_overview' ? snapshot : command === 'check_rife_environment' ? checking.promise : command === 'run_smoothie' ? rendering.promise : null; }
   });
   await ctx.initializeRuntime();
   assert.equal(ctx.isRuntimeLoading, false);
   assert.equal(ctx.renderRuntimeReady, true);
+  assert.equal(ctx.canInterpolate, true);
+  assert.equal(ctx.runtimeCheckPending, false);
+  assert.equal(ctx.runtimeNoticeVisible, false);
+  assert.equal(commands.includes('check_rife_environment'), false);
+  const manualCheck = ctx.retryRuntimeMaintenance();
   assert.equal(ctx.runtimeCheckPending, true);
   assert.equal(ctx.anyProcessing, false);
   const running = ctx.startSmoothie();
   assert.ok(commands.includes('run_smoothie'));
   ctx.runtimeSnapshot = { ...ctx.runtimeSnapshot, config: { ...ctx.runtimeSnapshot.config, ui: { migrated: true, autoRender: true } } };
   checking.resolve({ status: 'ready', detail: 'Verified' });
-  await new Promise(resolve => setImmediate(resolve));
+  await manualCheck;
   assert.equal(ctx.runtimeSnapshot.rifeReady, true);
   assert.equal(ctx.runtimeSnapshot.config.ui.autoRender, true);
   assert.equal(ctx.isSmoothieProcessing, true);

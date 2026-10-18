@@ -158,7 +158,7 @@ def prepare_release(kit):
     Preserved licence texts and these links do not replace applicable distribution
     obligations for linked libraries.
 
-    RIFE environment (downloaded during automatic setup or repair):
+    RIFE environment (downloaded when a manual component check requires setup or repair):
     Profile: {profile['profileId']}
     Practical-RIFE project archive: {profile['projectArchive']['url']}
     Model archive: {profile['modelArchive']['url']}

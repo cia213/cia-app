@@ -62,6 +62,7 @@ async function fixture(t, options = {}) {
       getSnapshot() { return snapshot; }
     };
     const wait = command => new Promise((resolve, reject) => pending.set(command, { resolve, reject }));
+    const overview = () => ({ ...snapshot, rifeReady: false, rifeHealth: { status: snapshot.rifeReady ? 'unchecked' : 'missing', detail: '' } });
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     window.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: 'main' } },
@@ -70,10 +71,10 @@ async function fixture(t, options = {}) {
         window.audit.commands.push({ command, args: command.includes('updater') ? undefined : args });
         if (command === 'plugin:event|listen') { events.set(args.event, callbacks.get(args.handler)); return ++id; }
         if (command === 'get_runtime_snapshot') return snapshot;
-        if (command === 'get_runtime_overview') return settings.holdOverview ? wait(command) : { ...snapshot, rifeReady: false, rifeHealth: { status: 'checking', detail: '' } };
+        if (command === 'get_runtime_overview') return settings.holdOverview ? wait(command) : overview();
         if (command === 'check_rife_environment') return settings.holdCheck ? wait(command) : snapshot.rifeHealth;
         if (command === 'get_app_version') return '1.3.2';
-        if (command === 'save_ui_preferences') { config.ui = { migrated: true, ...args }; return snapshot; }
+        if (command === 'save_ui_preferences') { config.ui = { migrated: true, ...args }; return overview(); }
         if (command === 'plugin:updater|check') return settings.updateAvailable ? { rid: 40, currentVersion: '1.3.2', version: '1.3.3', body: 'Test update' } : null;
         if (command === 'install_rife_environment' || command === 'run_time_remap' || command === 'run_smoothie' || command === 'pause_render') return wait(command);
         if (command === 'plugin:updater|download_and_install') return wait(command);
@@ -81,7 +82,7 @@ async function fixture(t, options = {}) {
         if (command === 'analyze_video') return { width: 640, height: 360, fps: 120, duration: 2 };
         if (command === 'pick_runtime_path') return 'C:/fixture/test.cube';
         if (command === 'save_runtime_config') { snapshot = { ...snapshot, config: args.config }; return snapshot; }
-        if (command === 'reset_runtime_config') { snapshot = { ...snapshot, loadError: null, smoothieReady: true, mediaToolsReady: true }; return { ...snapshot, rifeReady: false, rifeHealth: { status: 'checking', detail: '' } }; }
+        if (command === 'reset_runtime_config') { snapshot = { ...snapshot, loadError: null, smoothieReady: true, mediaToolsReady: true }; return overview(); }
         return null;
       }
     };
@@ -98,8 +99,14 @@ async function selectVideo(page, tab) {
   await page.getByRole('button', { name: tab === 'INTERPOLATION' ? 'START INTERPOLATION' : 'START RENDER', exact: true }).waitFor();
 }
 
+async function checkComponents(page) {
+  await page.getByRole('button', { name: 'ABOUT', exact: true }).click();
+  await page.getByRole('button', { name: 'Check components', exact: true }).click();
+}
+
 test('setup blocks visible update installation and exposes cancellation', { timeout: 20000 }, async t => {
   const { page } = await fixture(t, { updateAvailable: true, rifeReady: false });
+  await checkComponents(page);
   await page.getByRole('button', { name: 'CANCEL SETUP', exact: true }).waitFor();
   await page.evaluate(() => {
     window.audit.emit('install-progress', { step: 2, total: 7, label: 'Preparing Python 3.11' });
@@ -130,11 +137,24 @@ test('healthy interpolation has no environment toolbar or error dialog at both s
     assert.equal(await page.getByRole('dialog').count(), 0);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.equal(await page.evaluate(() => window.audit.commands.some(item => item.command === 'open_bug_report')), false);
+    assert.equal(await page.locator('.runtime-notification').count(), 0);
+    assert.equal(await page.evaluate(() => window.audit.commands.some(item => ['check_rife_environment', 'install_rife_environment', 'get_runtime_snapshot'].includes(item.command))), false);
+    await page.getByRole('button', { name: 'ABOUT', exact: true }).click();
+    const checkButton = page.getByRole('button', { name: 'Check components', exact: true });
+    assert.equal(await checkButton.isEnabled(), true);
+    assert.equal(await checkButton.evaluate(node => node.previousElementSibling.getAttribute('aria-label')), 'Check for cia render updates');
+    const bounds = await checkButton.boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width && bounds.y + bounds.height <= viewport.height);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => window.audit.commands.some(item => item.command === 'get_runtime_overview'));
+    assert.equal(await page.locator('.runtime-notification').count(), 0);
+    assert.equal(await page.evaluate(() => window.audit.commands.some(item => ['check_rife_environment', 'install_rife_environment'].includes(item.command))), false);
   }
 });
 
 test('automatic setup failure stays non-modal and its optional report is private and usable', { timeout: 20000 }, async t => {
   const { page } = await fixture(t, { rifeReady: false, viewport: { width: 640, height: 440 } });
+  await checkComponents(page);
   await page.getByRole('button', { name: 'CANCEL SETUP', exact: true }).waitFor();
   assert.equal(await page.getByRole('dialog').count(), 0);
   await page.evaluate(() => window.audit.reject('install_rife_environment', 'Python launch failed at C:/Users/Private Person/runtime/python.exe'));
@@ -162,8 +182,9 @@ test('automatic setup failure stays non-modal and its optional report is private
   assert.equal(await notice.getByRole('button', { name: 'VIEW ERROR', exact: true }).evaluate(node => document.activeElement === node), true);
 });
 
-test('background check shows real progress while navigation and Render remain usable', { timeout: 20000 }, async t => {
+test('manual check shows real progress while navigation and Render remain usable', { timeout: 20000 }, async t => {
   const { page } = await fixture(t, { holdCheck: true, viewport: { width: 640, height: 440 } });
+  await checkComponents(page);
   const notice = page.locator('.runtime-notification');
   await notice.waitFor();
   assert.equal(await page.getByText('CHECKING RENDER TOOLS', { exact: true }).count(), 0);
@@ -183,6 +204,9 @@ test('background check shows real progress while navigation and Render remain us
 
 test('missing components install automatically while a classic render can start', { timeout: 20000 }, async t => {
   const { page } = await fixture(t, { rifeReady: false });
+  assert.equal(await page.locator('.runtime-notification').count(), 0);
+  assert.equal(await page.evaluate(() => window.audit.commands.some(item => item.command === 'install_rife_environment')), false);
+  await checkComponents(page);
   await page.getByRole('status', { name: 'Automatic component update' }).waitFor();
   assert.equal(await page.getByRole('dialog').count(), 0);
   assert.equal(await page.evaluate(() => window.audit.commands.filter(item => item.command === 'install_rife_environment').length), 1);
@@ -277,6 +301,7 @@ test('broken configuration recovers automatically and unsupported CUDA keeps Ren
   await page.waitForFunction(() => window.audit.commands.some(item => item.command === 'reset_runtime_config'));
   assert.equal(await page.evaluate(() => window.audit.commands.find(item => item.command === 'reset_runtime_config').args.scope), 'render');
   assert.equal(await page.getByRole('dialog').count(), 0);
+  await checkComponents(page);
   await page.getByRole('button', { name: 'INTERPOLATION', exact: true }).click();
   await page.getByText('This fixture GPU is unsupported.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'INSTALL ENVIRONMENT', exact: true }).count(), 0);

@@ -15,7 +15,7 @@
       "nsis"
     ],
     "shortDescription": "Local video interpolation and rendering.",
-    "longDescription": "cia render is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Render tools are included; interpolation components are checked, installed and repaired automatically with visible progress.",
+    "longDescription": "cia render is a local desktop workflow for RIFE interpolation and smoothie-rs rendering. Render tools are included. Check components in About runs a manual diagnostic and automatically installs or repairs interpolation components when needed, with visible progress.",
     "resources": [
       "resources/time_remap.py",
       "resources/rife_worker.py",

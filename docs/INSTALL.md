@@ -8,8 +8,10 @@ wizard, or a machine-wide `PATH` dependency.
 
 ## Optional interpolation environment
 
-At launch, cia render checks interpolation in the background. Missing or broken
-components trigger automatic installation or repair, with no confirmation step.
+In About, click **CHECK COMPONENTS** beside **CHECK FOR UPDATES** to check
+interpolation manually. No full component check or component download starts at
+launch. After a manual check, missing or broken components trigger automatic
+installation or repair, with no confirmation step.
 The v1.3 profile is Practical-RIFE 4.26, Python 3.11.9
 x64, PyTorch 2.10.0 with CUDA 12.8, and torchvision 0.25.0. The download is several
 gigabytes; the Torch wheel alone is approximately 2.9 GB.
@@ -44,11 +46,14 @@ A full health check can take tens of seconds on the first check.
 
 Once interpolation is available, the page shows your clip workspace without an
 **ENVIRONMENT READY** label or routine **RECHECK** / **REPAIR ENVIRONMENT** buttons.
-Environment verification runs in a bottom-right, non-modal notification. It shows
+The manual diagnostic runs in a bottom-right, non-modal notification. It shows
 the current step and verified file counts when available; downloads show actual
 bytes rather than an estimated overall percentage. Navigation, clip selection,
-settings and classic rendering remain usable. Only interpolation waits for its
-components. Older environments using Torch 2.5.1 are not
+settings and classic rendering remain usable. Configured interpolation is
+available without running the manual diagnostic first; each interpolation job
+still validates its runtime before processing. During an active diagnostic or
+installation, interpolation waits to avoid competing GPU checks. Older
+environments using Torch 2.5.1 are not
 accepted as the v1.3.0 profile; repair creates the new verified environment.
 Downloads display byte progress, retry transient failures, and reuse only verified
 cached artifacts. An in-page banner shows component updates and available app

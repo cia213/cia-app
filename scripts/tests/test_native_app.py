@@ -256,8 +256,11 @@ def main() -> int:
         evidence["checks"]["rife_health_status"] = snapshot.get("rifeHealth", {}).get("status")
         assert driver.execute("return !!document.querySelector('.drop-zone') && !document.querySelector('[role=dialog]') && !document.querySelector('.environment-card');")
         evidence["checks"]["render_workspace_available_without_full_interpolation_check"] = True
-        evidence["checks"]["background_notification_visible_on_attach"] = driver.execute("return !!document.querySelector('.runtime-notification');")
-        driver.screenshot(destination / "background-check-native.png")
+        assert not driver.execute("return !!document.querySelector('.runtime-notification');"), "Startup must not start a full component check"
+        evidence["checks"]["no_component_notification_at_startup"] = True
+        assert snapshot.get("rifeHealth", {}).get("status") in ("unchecked", "missing", "broken")
+        evidence["checks"]["startup_does_not_run_full_component_diagnostic"] = True
+        driver.screenshot(destination / "startup-native.png")
         duplicate = subprocess.Popen([str(application)], stdout=log, stderr=subprocess.STDOUT, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
         try:
             assert duplicate.wait(timeout=15) == 0, "The second application instance did not exit successfully"
@@ -272,7 +275,13 @@ def main() -> int:
         assert driver.execute("return document.querySelectorAll('.about-link-card').length;") == 8
         assert driver.execute("return [...document.querySelectorAll('button')].every(e=>e.textContent.trim()!=='ADVANCED RUNTIME PATHS');")
         evidence["checks"]["about_credits_and_removed_button"] = True
+        assert driver.execute("return document.querySelector('[aria-label=\"Check components\"]')?.previousElementSibling?.getAttribute('aria-label')==='Check for cia render updates';")
+        evidence["checks"]["manual_component_button_beside_update_button"] = True
         driver.screenshot(destination / "about-native.png")
+        driver.click_text("CHECK COMPONENTS")
+        driver.wait(lambda: driver.execute("return !!document.querySelector('.runtime-notification');"), "manual component notification")
+        evidence["checks"]["manual_component_check_started"] = True
+        driver.screenshot(destination / "manual-check-native.png")
         driver.click_text("RENDER")
         driver.wait(lambda: driver.execute("return !!document.querySelector('.drop-zone');"), "Render source picker")
         if video:
@@ -304,7 +313,7 @@ def main() -> int:
                 evidence["checks"]["healthy_interpolation_has_no_maintenance_controls_or_popup"] = True
                 driver.screenshot(destination / "interpolation-ready-native.png")
                 driver.invoke("plugin:event|emit", {"event": "tauri://drag-drop", "payload": {"paths": [str(video)]}})
-                driver.wait(lambda: driver.execute("return [...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='START INTERPOLATION'&&!e.disabled);"), "interpolation analysis and background verification")
+                driver.wait(lambda: driver.execute("return [...document.querySelectorAll('button')].some(e=>e.textContent.trim()==='START INTERPOLATION'&&!e.disabled);"), "interpolation analysis and manual verification")
                 snapshot = driver.invoke("get_runtime_snapshot")
                 assert snapshot.get("rifeReady"), "Interpolation requires a healthy preinstalled environment"
                 evidence["checks"]["rife_health_status"] = snapshot.get("rifeHealth", {}).get("status")

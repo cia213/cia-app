@@ -6,8 +6,9 @@ cia render is a local Windows desktop app for two video operations:
 - **INTERPOLATION** - optional RIFE frame multiplication.
 
 Your media stays on the computer. cia render does not upload source videos.
-Render tools are bundled; interpolation components are checked and installed or
-repaired automatically, with visible progress.
+Render tools are bundled. **CHECK COMPONENTS** in About runs interpolation
+diagnostics and automatically installs or repairs components when needed, with
+visible progress. No full component check runs at launch.
 
 ## Render Preview
 
@@ -39,10 +40,13 @@ Download the latest Windows installer from the
 launching the app is enough to start using **RENDER** - no setup wizard, no
 extra downloads.
 
-**INTERPOLATION** uses a separate RIFE environment. A background check starts at
-launch; missing or broken components trigger automatic installation or repair
-on compatible NVIDIA hardware. A bottom-right notification shows real check
-steps, file counts and download progress, while **RENDER** remains usable. See
+**INTERPOLATION** uses a separate RIFE environment. **CHECK COMPONENTS**, next to
+**CHECK FOR UPDATES** in About, starts the diagnostic manually. Missing or broken
+components then trigger automatic installation or repair on compatible NVIDIA
+hardware. A bottom-right notification shows real check steps, file counts and
+download progress, while **RENDER** remains usable. Configured interpolation can
+start without running this diagnostic at every launch; each job still validates
+its runtime before processing. See
 [Install and first launch](docs/INSTALL.md) for details.
 
 Component updates and application updates appear in the main workspace. A failed

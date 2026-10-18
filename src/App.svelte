@@ -36,10 +36,10 @@
   let isInstallingRifeEnvironment = $state(false);
   let isCancellingInstall = $state(false);
   let isRuntimeLoading = $state(true);
-  let runtimeCheck = $state({ state: 'checking', label: 'Preparing render tools', completed: 0, total: 0, detail: '' });
-  let runtimeNoticeVisible = $state(true);
+  let runtimeCheck = $state({ state: 'idle', label: '', completed: 0, total: 0, detail: '' });
+  let runtimeNoticeVisible = $state(false);
   let runtimeCheckId = '';
-  let runtimeCheckPending = false;
+  let runtimeCheckPending = $state(false);
   let runtimeRepairPending = false;
   let automaticRepairAttempted = false;
   let runtimeRetryTimer = null;
@@ -276,7 +276,7 @@
   }
 
   function applyRuntimeSnapshot(snapshot) {
-    if (snapshot.rifeHealth?.status === 'checking' && runtimeSnapshot
+    if (snapshot.rifeHealth?.status === 'unchecked' && runtimeSnapshot
       && JSON.stringify(snapshot.config.rife) === JSON.stringify(runtimeSnapshot.config.rife)) {
       snapshot = { ...snapshot, rifeReady: runtimeSnapshot.rifeReady, rifeHealth: runtimeSnapshot.rifeHealth };
     }
@@ -344,10 +344,11 @@
         if (!snapshot.loadError) await persistUiPreferences();
       }
       showRuntimeSetup = false;
-      void verifyRuntimeInBackground();
+      if (runtimeCheck.state === 'repairing') runtimeCheck = { state: 'idle', label: '', completed: 0, total: 0, detail: '' };
     } catch (e) {
       runtimeError = String(e);
       runtimeCheck = { state: 'error', label: 'Render tools need attention', completed: 0, total: 0, detail: runtimeError };
+      runtimeNoticeVisible = true;
       recordFailure('runtime', runtimeError, false);
       showRuntimeSetup = false;
     }
@@ -375,11 +376,14 @@
     }, 1500);
   }
 
-  function retryRuntimeMaintenance() {
+  async function retryRuntimeMaintenance() {
+    if (runtimeCheckPending || isInstallingRifeEnvironment || runtimeCheck.state === 'waiting') return;
     automaticRepairAttempted = false;
     if (!renderRuntimeReady) {
       runtimeInitialization = initializeRuntime();
-    } else void verifyRuntimeInBackground();
+      await runtimeInitialization;
+    }
+    if (renderRuntimeReady) await verifyRuntimeInBackground();
   }
 
   async function resumeRuntimeMaintenance() {
@@ -672,6 +676,7 @@
   let rifeHealth = $derived(runtimeSnapshot?.rifeHealth ?? {
     status: runtimeSnapshot?.rifeReady ? 'ready' : 'missing', detail: ''
   });
+  let canInterpolate = $derived(Boolean(runtimeSnapshot?.rifeReady || rifeHealth.status === 'unchecked'));
   let hasConfiguredLut = $derived(Boolean(runtimeSnapshot?.config?.smoothie?.lutFile));
   let canRenderSmoothie = $derived(Boolean(rifeOutputPath) && lastOutputPath === rifeOutputPath && !anyProcessing);
   let rifeSliderPct = $derived(((rifeSettings.factor - 2) / (10 - 2)) * 100);
@@ -1313,7 +1318,7 @@
 
   async function startProcessing() {
     if (!videoPath || !videoInfo || anyProcessing || isLoading || isSmoothieLoading || isInstallingRifeEnvironment) return;
-    if (!renderRuntimeReady || !runtimeSnapshot?.rifeReady) return;
+    if (!renderRuntimeReady || !canInterpolate || runtimeCheckPending) return;
     const invalid = settingsValidationError('rife', rifeSettings) || settingsValidationError('smoothie', smoothieSettings);
     if (invalid) { jobError = invalid; recordFailure('rife', invalid, false); return; }
     const job = createJobSnapshot('rife', videoPath, videoInfo);
@@ -1836,7 +1841,7 @@
   }
 
   async function installAppUpdate() {
-    if (!availableUpdate || anyProcessing || isInstallingRifeEnvironment) return;
+    if (!availableUpdate || anyProcessing || isInstallingRifeEnvironment || runtimeCheckPending) return;
     let admitted = false;
     try {
       updateState = 'downloading';
@@ -2200,8 +2205,8 @@
                   <span>AUTO-RENDER AFTER INTERPOLATION</span>
                 </label>
 
-                <button class="btn-pro-secondary settings-start" onclick={startProcessing} disabled={anyProcessing || isInstallingRifeEnvironment || !renderRuntimeReady || !runtimeSnapshot?.rifeReady}>
-                  {runtimeSnapshot?.rifeReady && !isInstallingRifeEnvironment ? 'START INTERPOLATION' : rifeHealth.status === 'unsupported' ? 'INTERPOLATION UNAVAILABLE' : 'PREPARING INTERPOLATION...'}
+                <button class="btn-pro-secondary settings-start" onclick={startProcessing} disabled={anyProcessing || isInstallingRifeEnvironment || runtimeCheckPending || !renderRuntimeReady || !canInterpolate}>
+                  {canInterpolate && !isInstallingRifeEnvironment ? 'START INTERPOLATION' : rifeHealth.status === 'unsupported' ? 'INTERPOLATION UNAVAILABLE' : isInstallingRifeEnvironment ? 'UPDATING INTERPOLATION...' : 'CHECK COMPONENTS IN ABOUT'}
                 </button>
               </div>
             </section>
@@ -2383,6 +2388,9 @@
               {:else}
                 <span>CHECK FOR UPDATES</span>
               {/if}
+            </button>
+            <button class="about-update-btn" onclick={retryRuntimeMaintenance} disabled={isRuntimeLoading || runtimeCheckPending || isInstallingRifeEnvironment || runtimeCheck.state === 'waiting'} aria-label="Check components">
+              <span>CHECK COMPONENTS</span>
             </button>
             <button class="discord-contact" onclick={copyDiscordHandle} aria-label="Copy cia render Discord handle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 4.7a16.8 16.8 0 0 0-4.1-1.3l-.5 1.1a15.1 15.1 0 0 0-5.8 0l-.5-1.1A16.9 16.9 0 0 0 4.5 4.7C1.9 8.5 1.2 12.2 1.6 15.8a16.8 16.8 0 0 0 5 2.5l1.2-1.6a9.8 9.8 0 0 1-1.9-.9l.5-.4c3.7 1.7 7.7 1.7 11.4 0l.5.4c-.6.4-1.2.7-1.9.9l1.2 1.6a16.6 16.6 0 0 0 5-2.5c.5-4.2-.8-7.8-3.1-11.1ZM8.7 13.6c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" /></svg>
@@ -2673,9 +2681,9 @@
           {#if updateState === 'downloading' || updateState === 'ready'}
             <span class="update-installing-status">Please wait while the update finishes...</span>
           {:else}
-            {#if anyProcessing || isInstallingRifeEnvironment}<span class="update-installing-status">Finish or cancel the current operation before updating.</span>{/if}
+            {#if anyProcessing || isInstallingRifeEnvironment || runtimeCheckPending}<span class="update-installing-status">Finish or cancel the current operation before updating.</span>{/if}
             <button class="btn-pro-secondary" onclick={() => showUpdateModal = false}>LATER</button>
-            <button class="btn-primary-modal" onclick={installAppUpdate} disabled={anyProcessing || isInstallingRifeEnvironment}>UPDATE & RELAUNCH</button>
+            <button class="btn-primary-modal" onclick={installAppUpdate} disabled={anyProcessing || isInstallingRifeEnvironment || runtimeCheckPending}>UPDATE & RELAUNCH</button>
           {/if}
         </div>
       </div>
@@ -3122,6 +3130,7 @@
 
   .about-identity {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     min-height: 88px;
@@ -3162,6 +3171,7 @@
 
   .about-contacts {
     display: inline-flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     margin-left: auto;

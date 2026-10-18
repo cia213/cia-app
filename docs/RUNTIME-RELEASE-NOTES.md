@@ -16,8 +16,9 @@ payload from pinned, hash-verified upstream archives.
 The staging copy contains no personal LUT, model, source video, user configuration
 or developer-home path. Recipe/default settings are neutral; the application
 applies each job's selected settings. The RIFE environment is downloaded
-automatically when the background check finds missing or broken components,
-rather than bundled into the installer. Hardware and disk checks run first.
+automatically when the manual **CHECK COMPONENTS** diagnostic in About finds
+missing or broken components, rather than bundled into the installer. No full
+component check runs at launch. Hardware and disk checks run before downloads.
 
 ## Prepare and build
 

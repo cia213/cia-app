@@ -1766,16 +1766,23 @@ fn runtime_overview(app: &tauri::AppHandle) -> RuntimeSnapshot {
         Ok(config) => (effective_config(app, config), None),
         Err(error) => (RuntimeConfig::default(), Some(error)),
     };
-    snapshot_from_config(
-        app,
-        config,
-        RuntimeConfig::default(),
-        error,
-        Some(RifeHealth::unavailable(
-            "checking",
-            "Interpolation verification is running in the background.",
-        )),
-    )
+    // Load paths only. Full integrity and CUDA tests are explicitly requested
+    // from About, and interpolation still validates its runtime before each job.
+    let health = match rife_runtime(&config, app) {
+        Ok(_) => RifeHealth::unavailable(
+            "unchecked",
+            "Configured. Use Check components in About to run a full diagnostic.",
+        ),
+        Err(error) => RifeHealth::unavailable(
+            if config.rife.python_executable.is_some() || config.rife.directory.is_some() {
+                "broken"
+            } else {
+                "missing"
+            },
+            error,
+        ),
+    };
+    snapshot_from_config(app, config, RuntimeConfig::default(), error, Some(health))
 }
 
 fn required_file(value: &Option<String>, label: &str) -> Result<PathBuf, String> {
@@ -3471,7 +3478,7 @@ async fn check_rife_environment(
             &script,
             &runtime.directory,
             &runtime.model_directory,
-            false,
+            true,
             Some(callback),
         ))
     })
