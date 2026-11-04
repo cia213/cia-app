@@ -22,7 +22,8 @@ runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
 | Flowframes | Workflow reference | Its upstream application icon is displayed in ABOUT under the repository's GPL-3.0 terms; no Flowframes application code or executable is distributed. |
 
 Project names and marks remain the property of their respective owners. ABOUT
-uses locally bundled upstream logos without changing their colors or proportions.
+uses locally bundled upstream artwork, displayed in monochrome with its original
+proportions. Tauri uses the official white variant from its logo pack.
 Asset sources, pinned revisions and accompanying terms are recorded in
 `src/assets/credits/README.md`. Projects without a published dedicated logo use
 text labels. These credits do not imply sponsorship or endorsement.

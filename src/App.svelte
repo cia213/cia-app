@@ -3235,12 +3235,6 @@
     padding: 0;
   }
 
-  .about-link-card {
-    background: #09090c;
-    border: 1px solid #1c1c20;
-    border-radius: 8px;
-  }
-
   .about-kicker {
     display: block;
     color: #71717a;
@@ -3249,44 +3243,61 @@
     letter-spacing: 0.12em;
   }
   .about-link-card p {
-    color: #a1a1aa;
+    color: #85858d;
     font-size: 11px;
     line-height: 1.35;
   }
   .about-link-card h2 {
-    color: #e4e4e7;
+    color: #d4d4d8;
     font-size: 11px;
-    letter-spacing: 0.06em;
+    font-weight: 600;
+    letter-spacing: 0.025em;
   }
   .about-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid #202023;
+    border-radius: 8px;
+    background: #09090b;
   }
   .about-link-card {
-    min-height: 84px;
-    padding: 12px;
+    min-height: 88px;
+    padding: 16px;
     display: flex;
     align-items: center;
     text-align: left;
     color: inherit;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid #1c1c1f;
+    border-bottom: 1px solid #1c1c1f;
+    border-radius: 0;
     cursor: pointer;
-    transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
-    gap: 10px;
+    transition: background-color 150ms ease;
+    gap: 12px;
   }
+  .about-link-card:nth-child(4n) { border-right: 0; }
+  .about-link-card:nth-child(n + 5) { border-bottom: 0; }
   .about-link-card:hover,
   .about-link-card:focus-visible {
-    background: #121215;
-    border-color: rgba(255, 255, 255, 0.35);
-    outline: none;
-    transform: translateY(-1px);
+    --credit-mark-opacity: 1;
+    background: #111113;
+  }
+  .about-link-card:focus-visible {
+    outline: 1px solid #a1a1aa;
+    outline-offset: -2px;
   }
   .about-link-copy { min-width: 0; }
   .about-link-card h2 { margin-bottom: 4px; }
-  .about-link-arrow { margin-left: auto; color: #71717a; font-size: 15px; }
+  .about-link-arrow { margin-left: auto; color: #5b5b63; font-size: 13px; }
 
   @media (max-width: 760px) {
     .about-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .about-link-card:nth-child(n) { border-right: 1px solid #1c1c1f; border-bottom: 1px solid #1c1c1f; }
+    .about-link-card:nth-child(2n) { border-right: 0; }
+    .about-link-card:nth-last-child(-n + 2) { border-bottom: 0; }
     .page-stage { justify-content: flex-start; overflow-y: auto; }
     .about-identity { align-items: flex-start; }
     .about-contacts { align-self: center; }
