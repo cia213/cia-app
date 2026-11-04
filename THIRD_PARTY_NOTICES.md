@@ -19,11 +19,15 @@ runtime payload; see `docs/RUNTIME-RELEASE-NOTES.md`.
 | Tauri | Desktop application framework | Apache-2.0 OR MIT according to installed dependency metadata. |
 | Svelte and Vite | Frontend framework and build tooling | MIT according to installed dependency metadata. |
 | IBM Plex Sans and Mono | Bundled frontend typography | SIL Open Font License 1.1 according to installed Fontsource metadata. |
-| Flowframes | Workflow reference | Referenced in ABOUT only; no Flowframes code or binary is distributed. |
+| Flowframes | Workflow reference | Its upstream application icon is displayed in ABOUT under the repository's GPL-3.0 terms; no Flowframes application code or executable is distributed. |
 
-Project names and marks remain the property of their respective owners. CIA
-RENDER's local ABOUT marks are compact interface identifiers, not a claim of
-endorsement.
+Project names and marks remain the property of their respective owners. ABOUT
+uses locally bundled upstream logos without changing their colors or proportions.
+Asset sources, pinned revisions and accompanying terms are recorded in
+`src/assets/credits/README.md`. Projects without a published dedicated logo use
+text labels. These credits do not imply sponsorship or endorsement.
+TAURI is a trademark of The Tauri Programme within the Commons Conservancy.
+https://tauri.app/
 
 Original third-party licence texts remain unchanged; these notices do not replace
 them.

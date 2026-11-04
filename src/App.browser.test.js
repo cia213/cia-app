@@ -11,7 +11,7 @@ import { chromium } from 'playwright';
 // a separate release gate. Windows CI supplies Edge, so no browser download is
 // needed. Run after npm run build.
 const dist = fileURLToPath(new URL('../dist/', import.meta.url));
-const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.woff': 'font/woff', '.woff2': 'font/woff2' };
+const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 let server;
 let browser;
 let origin;

@@ -1,0 +1,5 @@
+*.svg text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.png -text
+*.ico -text
